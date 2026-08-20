@@ -65,6 +65,41 @@ function Set-AzCaBundle {
   intermediate certificate in the Windows trust store. Re-run this if the
   corporate certificate changes and the CLI starts failing TLS again.
 #>
+<#
+.SYNOPSIS
+  Runs the Azure CLI and returns its output and exit code without throwing.
+
+.DESCRIPTION
+  The CLI writes progress and warnings to stderr. Windows PowerShell turns any
+  redirected native stderr into ErrorRecords, which under
+  $ErrorActionPreference = 'Stop' abort the caller on the first such line --
+  even when the command goes on to succeed. Relaxing the preference around the
+  call is what makes the output capturable; the exit code still decides
+  success.
+
+  Intended for probing commands that are expected to fail sometimes, such as
+  reading configuration that may not exist yet.
+#>
+function Invoke-Az {
+  param(
+    [Parameter(Mandatory = $true)][string]$AzPath,
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
+  )
+
+  $previous = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = (& $AzPath @Arguments 2>&1 | Out-String)
+    return [pscustomobject]@{
+      Output   = $output.Trim()
+      ExitCode = $LASTEXITCODE
+      Success  = ($LASTEXITCODE -eq 0)
+    }
+  } finally {
+    $ErrorActionPreference = $previous
+  }
+}
+
 function Update-AzCaBundle {
   $certifi = Join-Path $PSScriptRoot '..\.venv\Lib\site-packages\certifi\cacert.pem'
   $out = Join-Path $PSScriptRoot '..\.venv\ca-bundle.pem'

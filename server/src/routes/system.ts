@@ -74,7 +74,15 @@ export default async function systemRoutes(app: FastifyInstance) {
             ].join(' ')
           : status === 404
             ? `The entity set "${headerEntity.entitySet}" does not exist in this environment (404). Use the entity explorer below to find the correct name, then update server/src/d365/entities.ts.`
-            : `Token acquired, but querying ${headerEntity.entitySet} failed.`;
+            : `Token acquired, but querying ${headerEntity.entitySet} failed${
+                status ? ` with HTTP ${status}` : ''
+              }. ${
+                status === 403
+                  ? `The identity is recognised but not permitted to read this entity. Check the D365 user mapped to client ${credential.clientId ?? 'unknown'} has the required security roles.`
+                  : status === 400
+                    ? 'D365 rejected the query itself, which usually means a selected field does not exist on this entity.'
+                    : 'See the upstream detail below.'
+              }`;
 
       return reply.code(503).send({
         status: 'failed',

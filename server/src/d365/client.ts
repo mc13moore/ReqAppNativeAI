@@ -78,8 +78,15 @@ function parseErrorBody(status: number, text: string): D365Error {
       error?: { code?: string; message?: string | { value?: string }; innererror?: unknown };
     };
     const raw = parsed.error?.message;
+    // Falling back to a bare "D365 request failed" throws away the only
+    // evidence available. When the body carries no recognisable message, keep
+    // the status and the raw payload -- an unrecognised error shape is itself
+    // diagnostic.
     const message =
-      typeof raw === 'string' ? raw : raw?.value ?? 'D365 request failed';
+      typeof raw === 'string'
+        ? raw
+        : raw?.value ??
+          `D365 returned HTTP ${status} with an unrecognised error body: ${text.slice(0, 500)}`;
     return new D365Error(
       status,
       parsed.error?.code || `http_${status}`,

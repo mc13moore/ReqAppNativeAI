@@ -123,15 +123,74 @@ if ($groupExists) {
   if ($LASTEXITCODE -ne 0) { throw "Failed to create resource group '$ResourceGroup' in '$Location'." }
 }
 
+# --- Carry forward existing configuration ------------------------------------
+#
+# Every parameter not supplied on the command line falls back to the template
+# default, which for an existing deployment means silently undoing settings.
+# Omitting -AuthClientId would set AUTH_MODE=none and drop the stored secret,
+# turning off sign-in on a running app. Reading the current values back and
+# re-supplying them makes a partial redeploy safe.
+
+$existingApp = Invoke-Az $az containerapp list --resource-group $ResourceGroup --query '[0].name' --output tsv
+$existingAppName = if ($existingApp.Success) { $existingApp.Output } else { '' }
+
+$currentImage = ''
+
+if ($existingAppName) {
+  $img = Invoke-Az $az containerapp show --name $existingAppName --resource-group $ResourceGroup `
+    --query 'properties.template.containers[0].image' --output tsv
+  if ($img.Success) { $currentImage = $img.Output }
+
+  # --- Sign-in configuration ---
+  if (-not $AuthClientId) {
+    $auth = Invoke-Az $az containerapp auth show --name $existingAppName --resource-group $ResourceGroup `
+      --query 'identityProviders.azureActiveDirectory.registration.clientId' --output tsv
+    if ($auth.Success -and $auth.Output -and $auth.Output -ne 'null') {
+      $secret = Invoke-Az $az containerapp secret show --name $existingAppName --resource-group $ResourceGroup `
+        --secret-name 'auth-client-secret' --query value --output tsv
+      if ($secret.Success -and $secret.Output) {
+        $AuthClientId = $auth.Output
+        $AuthClientSecret = $secret.Output
+        Write-Host "Preserving existing sign-in configuration (client $AuthClientId)." -ForegroundColor DarkGray
+      } else {
+        Write-Host 'WARNING: sign-in is configured but its secret could not be read.' -ForegroundColor Yellow
+        Write-Host '         Pass -AuthClientId and -AuthClientSecret or sign-in will be disabled.' -ForegroundColor Yellow
+      }
+    }
+  }
+
+  # --- D365 service principal ---
+  if (-not $D365ClientId) {
+    $envJson = Invoke-Az $az containerapp show --name $existingAppName --resource-group $ResourceGroup `
+      --query "properties.template.containers[0].env[?name=='D365_CLIENT_ID' || name=='D365_TENANT_ID']" --output json
+    if ($envJson.Success -and $envJson.Output -and $envJson.Output -ne '[]') {
+      $vars = $envJson.Output | ConvertFrom-Json
+      $existingClientId = ($vars | Where-Object { $_.name -eq 'D365_CLIENT_ID' }).value
+      $existingTenantId = ($vars | Where-Object { $_.name -eq 'D365_TENANT_ID' }).value
+
+      if ($existingClientId -and $existingTenantId) {
+        $secret = Invoke-Az $az containerapp secret show --name $existingAppName --resource-group $ResourceGroup `
+          --secret-name 'd365-client-secret' --query value --output tsv
+        if ($secret.Success -and $secret.Output) {
+          $D365ClientId = $existingClientId
+          $D365TenantId = $existingTenantId
+          $D365ClientSecret = $secret.Output
+          $useD365ServicePrincipal = $true
+          Write-Host "Preserving existing D365 service principal (client $D365ClientId)." -ForegroundColor DarkGray
+        } else {
+          Write-Host 'WARNING: D365 service principal is configured but its secret could not be read.' -ForegroundColor Yellow
+          Write-Host '         Pass -D365TenantId, -D365ClientId and -D365ClientSecret or D365 access will revert' -ForegroundColor Yellow
+          Write-Host '         to the managed identity, which cannot work across tenants.' -ForegroundColor Yellow
+        }
+      }
+    }
+  }
+}
+
 # --- Pass 1: infrastructure --------------------------------------------------
 
-# The template's containerImage parameter defaults to a placeholder. If an app
-# is already running a real image -- pushed by the GitHub Actions workflow, for
-# instance -- redeploying without pinning that image would silently roll the
-# app back to the placeholder. Carry the current image forward instead.
-$currentImage = & $az containerapp list --resource-group $ResourceGroup `
-  --query '[0].properties.template.containers[0].image' --output tsv 2>$null
-if ($LASTEXITCODE -ne 0) { $currentImage = '' }
+# The template's containerImage parameter defaults to a placeholder, so an app
+# already running a real image would be rolled back to it. Pin the current one.
 
 $preserveImage = $currentImage -and $currentImage -notmatch 'k8se/quickstart'
 
@@ -182,16 +241,20 @@ if ($SkipImageBuild) {
 } else {
   Write-Step "Building image in ACR '$registryName' (this runs in Azure, not locally)"
 
-  # stderr goes to a file rather than through 2>&1: in Windows PowerShell that
-  # redirection wraps each line in an ErrorRecord and, under
-  # $ErrorActionPreference = 'Stop', throws before the exit code can be read.
-  $errFile = [System.IO.Path]::GetTempFileName()
+  # The Azure CLI writes ordinary progress ("Packing source code into tar...")
+  # to stderr. In Windows PowerShell any redirection of native stderr turns
+  # those lines into ErrorRecords, which under $ErrorActionPreference = 'Stop'
+  # abort the script on the first progress message -- even for a build that
+  # would have succeeded. Relaxing the preference for exactly this call is what
+  # makes the output capturable; the exit code is still what decides success.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   try {
-    & $az acr build --registry $registryName --image $image --file "$repoRoot/Dockerfile" $repoRoot --output none 2>$errFile
+    $buildErr = (& $az acr build --registry $registryName --image $image `
+        --file "$repoRoot/Dockerfile" $repoRoot --output none 2>&1 | Out-String)
     $buildExit = $LASTEXITCODE
-    $buildErr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
   } finally {
-    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
+    $ErrorActionPreference = $previousPreference
   }
 
   if ($buildExit -eq 0) {
@@ -255,15 +318,32 @@ Write-Host "  App URL          : $appUrl"
 Write-Host "  Container app    : $appName"
 Write-Host "  Registry         : $loginServer"
 Write-Host ''
-Write-Host '  Managed identity client ID:' -ForegroundColor Yellow
-Write-Host "    $identityClientId" -ForegroundColor Yellow
-Write-Host ''
-Write-Host '  REQUIRED NEXT STEP in Dynamics 365:' -ForegroundColor Yellow
-Write-Host '    System administration > Setup > Microsoft Entra ID applications'
-Write-Host '    Add a row with:'
-Write-Host "      Client Id : $identityClientId"
-Write-Host '      Name      : Requisition app (or anything descriptive)'
-Write-Host '      User ID   : a service account user with requisition permissions'
+if ($useD365ServicePrincipal) {
+  Write-Host '  D365 access: service principal (cross-tenant)' -ForegroundColor Yellow
+  Write-Host "    Tenant    : $D365TenantId"
+  Write-Host "    Client Id : $D365ClientId"
+  Write-Host ''
+  Write-Host '  That client ID must appear in Dynamics 365 under:' -ForegroundColor Yellow
+  Write-Host '    System administration > Setup > Microsoft Entra ID applications'
+  Write-Host '    mapped to a user with requisition permissions.'
+  Write-Host ''
+  Write-Host "  The managed identity ($identityClientId)" -ForegroundColor DarkGray
+  Write-Host '  is still used to pull the container image, but is NOT used for D365.' -ForegroundColor DarkGray
+} else {
+  Write-Host '  D365 access: managed identity (same tenant only)' -ForegroundColor Yellow
+  Write-Host "    Client Id : $identityClientId" -ForegroundColor Yellow
+  Write-Host ''
+  Write-Host '  REQUIRED NEXT STEP in Dynamics 365:' -ForegroundColor Yellow
+  Write-Host '    System administration > Setup > Microsoft Entra ID applications'
+  Write-Host '    Add a row with:'
+  Write-Host "      Client Id : $identityClientId"
+  Write-Host '      Name      : Requisition app (or anything descriptive)'
+  Write-Host '      User ID   : a service account user with requisition permissions'
+  Write-Host ''
+  Write-Host '  If D365 is in a DIFFERENT Entra tenant than this subscription, a' -ForegroundColor DarkGray
+  Write-Host '  managed identity cannot work. Redeploy with -D365TenantId,' -ForegroundColor DarkGray
+  Write-Host '  -D365ClientId and -D365ClientSecret instead.' -ForegroundColor DarkGray
+}
 Write-Host ''
 if (-not $imageBuilt) {
   Write-Host '  Configuration was applied, but no image was built by this run.' -ForegroundColor Yellow
