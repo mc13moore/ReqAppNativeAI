@@ -58,6 +58,9 @@ app.setErrorHandler((error, request, reply) => {
       error: error.code,
       message: error.message,
       source: 'd365',
+      // D365's innererror names the exact entity set or property it rejected,
+      // which is the difference between "something failed" and a fix.
+      detail: error.detail ? JSON.stringify(error.detail) : undefined,
     });
   }
 

@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { authEnabled } from '../config.js';
+import { authEnabled, config } from '../config.js';
 
 export interface AppUser {
   id: string;
@@ -82,7 +82,19 @@ export function readUser(request: FastifyRequest): AppUser | null {
   }
 }
 
-/** Fastify preHandler that rejects unauthenticated requests. */
+/**
+ * Checks a signed-in user against ALLOWED_USERS.
+ *
+ * An empty allowlist permits everyone the identity provider admitted, which is
+ * the right default: the gate is then Entra ID itself, and duplicating that
+ * list here would only create a second place to forget to update.
+ */
+export function isAllowed(user: AppUser): boolean {
+  if (config.ALLOWED_USERS.length === 0) return true;
+  return config.ALLOWED_USERS.includes(user.name.trim().toLowerCase());
+}
+
+/** Fastify preHandler that rejects unauthenticated and unauthorised requests. */
 export async function requireUser(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -95,6 +107,18 @@ export async function requireUser(
     });
     return;
   }
+
+  if (!isAllowed(user)) {
+    // Logged so an unexpected denial can be traced to the exact name that was
+    // compared, which is usually a UPN-versus-email mismatch.
+    request.log.warn({ user: user.name }, 'user is not on the allowlist');
+    await reply.code(403).send({
+      error: 'forbidden',
+      message: `${user.name} is not authorised to use this application. Ask an administrator to add you.`,
+    });
+    return;
+  }
+
   request.user = user;
 }
 

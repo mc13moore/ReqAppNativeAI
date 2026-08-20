@@ -251,9 +251,36 @@ depends on the hostname Azure generates. Now that it exists:
   -AuthClientSecret '<secret>'
 ```
 
-By default anyone in your tenant can sign in. To limit it to named testers, set
-the enterprise application to require user assignment in the Entra portal and
-assign only those people.
+#### Limiting who can sign in
+
+By default **anyone in your tenant** can sign in. There are two independent ways
+to narrow that, and they compose:
+
+**1. Entra ID user assignment (the real gate).** In the Entra portal, open
+*Enterprise applications → Purchase Requisition App → Properties*, set
+**Assignment required** to *Yes*, then add only your testers under *Users and
+groups*. Unassigned users are refused at the identity provider and never reach
+the container at all.
+
+**2. An in-app allowlist (a second gate).** Pass `-AllowedUsers` at deploy time:
+
+```powershell
+./scripts/deploy.ps1 `
+  -ResourceGroup rg-d365-fsc-app `
+  -SkipImageBuild `
+  -AuthClientId <clientId> `
+  -AuthClientSecret '<secret>' `
+  -AllowedUsers 'matt.moore@example.com','someone.else@example.com'
+```
+
+Anyone signing in outside that list gets a 403 naming the account that was
+rejected. Leaving it empty allows everyone who can sign in.
+
+Prefer option 1 — it is enforced before a request exists. Option 2 is useful
+when you cannot change the enterprise application, or want the extra gate as
+defence in depth. It matches on the sign-in name, so if a denial surprises you,
+check the container logs: the rejected name is logged, and the usual cause is a
+UPN that differs from the person's email address.
 
 ### 4. Verify
 

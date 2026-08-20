@@ -13,6 +13,7 @@ export function Spinner({ label = 'Loading…' }: { label?: string }) {
 export function ErrorBanner({ error, onRetry }: { error: unknown; onRetry?: () => void }) {
   const message = error instanceof Error ? error.message : String(error);
   const details = error instanceof ApiError ? error.errors : [];
+  const upstream = error instanceof ApiError ? error.detail : undefined;
   const fromD365 = error instanceof ApiError && error.source === 'd365';
 
   return (
@@ -26,6 +27,15 @@ export function ErrorBanner({ error, onRetry }: { error: unknown; onRetry?: () =
               <li key={detail}>{detail}</li>
             ))}
           </ul>
+        )}
+        {upstream && (
+          // Collapsed by default: it is verbose and only matters when the
+          // summary above is not enough, but it is the message that actually
+          // names the offending entity or property.
+          <details className="banner__detail">
+            <summary>What Dynamics 365 said</summary>
+            <pre>{upstream}</pre>
+          </details>
         )}
       </div>
       {onRetry && (

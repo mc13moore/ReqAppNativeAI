@@ -34,6 +34,9 @@ param(
   [string]$AuthClientId = '',
   [string]$AuthClientSecret = '',
 
+  # Optional allowlist of sign-in names. Empty allows anyone who can sign in.
+  [string[]]$AllowedUsers = @(),
+
   [string]$ImageTag = 'latest',
 
   # Pin the deployment to one subscription. Leave empty to use whichever the
@@ -114,6 +117,9 @@ if ($preserveImage) {
 if ($AuthClientId) {
   $deployArgs += @('--parameters', "authClientId=$AuthClientId", "authClientSecret=$AuthClientSecret")
 }
+if ($AllowedUsers.Count -gt 0) {
+  $deployArgs += @('--parameters', "allowedUsers=$($AllowedUsers -join ',')")
+}
 
 $result = & $az @deployArgs | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Infrastructure deployment failed.' }
@@ -167,6 +173,9 @@ then push to main. See the README section "When ACR Tasks is blocked".
   )
   if ($AuthClientId) {
     $deployArgs += @('--parameters', "authClientId=$AuthClientId", "authClientSecret=$AuthClientSecret")
+  }
+  if ($AllowedUsers.Count -gt 0) {
+    $deployArgs += @('--parameters', "allowedUsers=$($AllowedUsers -join ',')")
   }
 
   $result = & $az @deployArgs | ConvertFrom-Json

@@ -37,6 +37,9 @@ param authClientSecret string = ''
 @description('Entra ID tenant users sign in from.')
 param tenantId string = subscription().tenantId
 
+@description('Optional comma-separated allowlist of sign-in names, for example "a@x.com,b@x.com". Empty allows anyone who can sign in. This narrows access behind Entra ID; it does not replace it.')
+param allowedUsers string = ''
+
 @description('Scale-to-zero keeps idle cost at nothing. Raise to 1 only if cold starts become a problem.')
 @minValue(0)
 @maxValue(5)
@@ -192,6 +195,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'D365_LINE_ENTITY', value: d365LineEntity }
             { name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID', value: identity.properties.clientId }
             { name: 'AUTH_MODE', value: authEnabled ? 'easyauth' : 'none' }
+            { name: 'ALLOWED_USERS', value: allowedUsers }
           ]
           probes: [
             {

@@ -18,6 +18,13 @@ export class ApiError extends Error {
     message: string,
     readonly errors: string[] = [],
     readonly source?: string,
+    /**
+     * Verbatim upstream error text. D365 explains precisely what it disliked --
+     * an unknown entity set, an unknown property, a malformed filter -- and
+     * that sentence is usually the whole diagnosis, so it must reach the user
+     * rather than being swallowed in favour of a generic summary.
+     */
+    readonly detail?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -52,11 +59,13 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const body = (await response.json()) as Record<string, unknown>;
 
   if (!response.ok) {
+    const detail = body['detail'];
     throw new ApiError(
       response.status,
       typeof body['message'] === 'string' ? body['message'] : `Request failed (${response.status}).`,
       Array.isArray(body['errors']) ? (body['errors'] as string[]) : [],
       typeof body['source'] === 'string' ? body['source'] : undefined,
+      typeof detail === 'string' ? detail : detail ? JSON.stringify(detail) : undefined,
     );
   }
 

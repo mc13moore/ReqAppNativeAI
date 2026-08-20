@@ -55,6 +55,25 @@ const schema = z.object({
   AUTH_MODE: z.enum(['easyauth', 'none']).default('easyauth'),
 
   /**
+   * Optional allowlist of sign-in names, comma separated and case-insensitive.
+   * Empty means any user the identity provider lets through is accepted.
+   *
+   * This is a second gate behind Entra ID, not a replacement for it: sign-in is
+   * still required, and this only narrows who may proceed afterwards. Useful
+   * when the tenant allows everyone to sign in but only a few people should be
+   * able to write requisitions.
+   */
+  ALLOWED_USERS: z
+    .string()
+    .default('')
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+
+  /**
    * Directory holding the built frontend, resolved relative to the compiled
    * entrypoint. Two levels up lands on the repo root from server/dist and on
    * the repo root from server/src, so one default covers dev and the image.
