@@ -1,0 +1,130 @@
+name: Build and deploy
+
+# Builds the container image on a GitHub runner and pushes it to Azure
+# Container Registry, then points the Container App at the new image.
+#
+# The build happens here rather than in Azure because ACR Tasks is not
+# available on this subscription (TasksOperationsNotAllowed), and Docker cannot
+# be installed on the development machine without administrator rights.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'docs/**'
+  workflow_dispatch:
+
+# Required for OIDC: the runner requests a short-lived token from GitHub that
+# Azure has been configured to trust. No secret is stored anywhere.
+permissions:
+  id-token: write
+  contents: read
+
+# Never let two deploys race to set the image on the same container app.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+      CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP }}
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Verify configuration
+        run: |
+          missing=""
+          [ -z "$RESOURCE_GROUP" ] && missing="$missing AZURE_RESOURCE_GROUP"
+          [ -z "$REGISTRY_NAME" ]  && missing="$missing AZURE_REGISTRY_NAME"
+          [ -z "$CONTAINER_APP" ]  && missing="$missing AZURE_CONTAINER_APP"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables:$missing"
+            echo "Set them under Settings > Secrets and variables > Actions > Variables."
+            exit 1
+          fi
+          echo "Resource group: $RESOURCE_GROUP"
+          echo "Registry:       $REGISTRY_NAME"
+          echo "Container app:  $CONTAINER_APP"
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign in to the container registry
+        run: az acr login --name "$REGISTRY_NAME"
+
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+          REGISTRY_HOST="${REGISTRY_NAME}.azurecr.io"
+          # Tag with the commit SHA so every deploy is traceable to a commit,
+          # and with latest so the Bicep default keeps working.
+          SHA_TAG="${REGISTRY_HOST}/requisitions:${GITHUB_SHA}"
+          LATEST_TAG="${REGISTRY_HOST}/requisitions:latest"
+
+          docker build \
+            --cache-from "$LATEST_TAG" \
+            --build-arg BUILDKIT_INLINE_CACHE=1 \
+            -t "$SHA_TAG" -t "$LATEST_TAG" .
+
+          docker push "$SHA_TAG"
+          docker push "$LATEST_TAG"
+
+          echo "IMAGE=$SHA_TAG" >> "$GITHUB_ENV"
+        env:
+          DOCKER_BUILDKIT: '1'
+
+      - name: Deploy to Container Apps
+        run: |
+          az containerapp update \
+            --name "$CONTAINER_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE" \
+            --output none
+
+      - name: Wait for the new revision to become healthy
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 30); do
+            state=$(az containerapp revision list \
+              --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+              --query "sort_by([?properties.active], &properties.createdTime)[-1].properties.runningState" \
+              --output tsv)
+            echo "attempt $attempt: $state"
+            case "$state" in
+              Running|RunningAtMaxScale|Scaled)  echo "Revision is healthy."; exit 0 ;;
+              Failed|Degraded)                   echo "::error::Revision entered state $state"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          # Scale-to-zero means an idle app legitimately reports no running
+          # replicas, so a timeout here is inconclusive rather than a failure.
+          echo "::warning::Revision did not report healthy within 5 minutes. This is expected when minReplicas is 0 and nothing has requested the app yet."
+
+      - name: Summary
+        if: always()
+        run: |
+          FQDN=$(az containerapp show --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn --output tsv 2>/dev/null || echo '')
+          {
+            echo "### Deployment"
+            echo ""
+            if [ -n "$FQDN" ]; then
+              echo "- App: https://${FQDN}"
+              echo "- Diagnostics: https://${FQDN}/diagnostics"
+            fi
+            echo "- Image: \`${IMAGE:-not built}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

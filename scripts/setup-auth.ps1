@@ -28,12 +28,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-  throw 'Azure CLI is not installed. Install it with: winget install Microsoft.AzureCLI'
-}
+. "$PSScriptRoot/common.ps1"
+
+Set-AzCaBundle
+$az = Resolve-AzCli
+Write-Host "Azure CLI: $az" -ForegroundColor DarkGray
 
 Write-Host '==> Reading the container app hostname' -ForegroundColor Cyan
-$fqdn = az containerapp show --name $AppName --resource-group $ResourceGroup `
+$fqdn = & $az containerapp show --name $AppName --resource-group $ResourceGroup `
   --query 'properties.configuration.ingress.fqdn' --output tsv
 if ($LASTEXITCODE -ne 0 -or -not $fqdn) {
   throw "Could not find container app '$AppName' in resource group '$ResourceGroup'. Deploy first."
@@ -45,15 +47,15 @@ Write-Host "    Redirect URI: $redirectUri" -ForegroundColor DarkGray
 # Reuse an existing registration if one is already there, so re-running does
 # not litter the tenant with duplicates.
 Write-Host '==> Looking for an existing registration' -ForegroundColor Cyan
-$existing = az ad app list --display-name $DisplayName --query "[0]" --output json | ConvertFrom-Json
+$existing = & $az ad app list --display-name $DisplayName --query "[0]" --output json | ConvertFrom-Json
 
 if ($existing) {
   $appId = $existing.appId
   Write-Host "    Reusing registration $appId" -ForegroundColor DarkGray
-  az ad app update --id $appId --web-redirect-uris $redirectUri --output none
+  & $az ad app update --id $appId --web-redirect-uris $redirectUri --output none
 } else {
   Write-Host '==> Creating the app registration' -ForegroundColor Cyan
-  $created = az ad app create `
+  $created = & $az ad app create `
     --display-name $DisplayName `
     --sign-in-audience AzureADMyOrg `
     --web-redirect-uris $redirectUri `
@@ -65,10 +67,10 @@ if ($existing) {
 
 # EasyAuth validates the token audience against api://<clientId>.
 Write-Host '==> Setting the application ID URI' -ForegroundColor Cyan
-az ad app update --id $appId --identifier-uris "api://$appId" --output none
+& $az ad app update --id $appId --identifier-uris "api://$appId" --output none
 
 Write-Host '==> Creating a client secret' -ForegroundColor Cyan
-$secret = az ad app credential reset --id $appId --years $SecretYears --query password --output tsv
+$secret = & $az ad app credential reset --id $appId --years $SecretYears --query password --output tsv
 if ($LASTEXITCODE -ne 0 -or -not $secret) { throw 'Failed to create a client secret.' }
 
 Write-Host ''

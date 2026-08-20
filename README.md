@@ -67,20 +67,71 @@ Dockerfile         Multi-stage build for the single runtime image
 
 ## Prerequisites
 
-Nothing in this list is installed on a fresh Windows machine. Install with
-winget, then **open a new terminal** so the updated PATH is picked up:
+You need **Node 22+** and the **Azure CLI**. Docker is not required — the deploy
+script builds images in Azure using ACR Tasks.
+
+With administrator rights, both install from winget. Open a new terminal
+afterwards so the updated PATH is picked up:
 
 ```powershell
-winget install OpenJS.NodeJS.LTS        # Node 22+
+winget install OpenJS.NodeJS.LTS
 winget install Microsoft.AzureCLI
 ```
 
-Docker is optional — the deploy script builds images in Azure using ACR Tasks.
-Install it only if you want to run the container locally:
+### Without administrator rights
+
+Both installers need elevation, so on a locked-down machine use these instead.
+Nothing below touches Program Files or the registry.
+
+**Node** — extract the official zip into your user profile and add it to PATH:
 
 ```powershell
-winget install Docker.DockerDesktop
+$ver  = 'v22.23.2'
+$dest = "$env:LOCALAPPDATA\Programs\nodejs"
+Invoke-WebRequest "https://nodejs.org/dist/$ver/node-$ver-win-x64.zip" -OutFile "$env:TEMP\node.zip"
+Expand-Archive "$env:TEMP\node.zip" "$env:LOCALAPPDATA\Programs"
+Rename-Item "$env:LOCALAPPDATA\Programs\node-$ver-win-x64" $dest
+[Environment]::SetEnvironmentVariable('Path',
+  ([Environment]::GetEnvironmentVariable('Path','User').TrimEnd(';') + ";$dest"), 'User')
 ```
+
+**Azure CLI** — install into a project-local virtual environment. It lives in
+`.venv/`, which is gitignored, and uninstalls by deleting that folder:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --use-feature=truststore azure-cli
+```
+
+The deploy scripts find this automatically — they prefer a system-wide `az` and
+fall back to `.venv` when there isn't one.
+
+### If your network intercepts TLS
+
+On a corporate network that inspects HTTPS, tools that carry their own
+certificate list fail with `CERTIFICATE_VERIFY_FAILED` or hang indefinitely,
+because they don't consult the Windows trust store where the intercepting root
+actually lives. Three separate fixes, one per tool:
+
+| Tool | Symptom | Fix |
+|---|---|---|
+| npm | `npm install` hangs forever with no output | `[Environment]::SetEnvironmentVariable('NODE_OPTIONS','--use-system-ca','User')` |
+| pip | `SSLError` on install | pass `--use-feature=truststore` |
+| Azure CLI | `CERTIFICATE_VERIFY_FAILED` on any command | point `REQUESTS_CA_BUNDLE` at a combined bundle |
+
+For the last one, `scripts/common.ps1` handles it. `Update-AzCaBundle` builds
+`.venv/ca-bundle.pem` by combining certifi's public roots with every root in
+your Windows store, and `Set-AzCaBundle` — called automatically by both deploy
+scripts — points the CLI at it. Re-run `Update-AzCaBundle` if the corporate
+certificate rotates:
+
+```powershell
+. ./scripts/common.ps1
+Update-AzCaBundle
+```
+
+This keeps certificate verification **on**. Never reach for
+`AZURE_CLI_DISABLE_CONNECTION_VERIFICATION` — that turns it off entirely.
 
 ## Running locally
 
@@ -107,20 +158,65 @@ The template grants the managed identity `AcrPull` on the registry, which is a
 role assignment — so the account running the deploy needs **Owner** or **User
 Access Administrator** on the resource group, not just Contributor.
 
+`infra/main.parameters.json` already carries the D365 environment URL and legal
+entity, so there is nothing to edit before a first deploy.
+
 ```powershell
-az login
-Copy-Item infra/main.parameters.json infra/main.parameters.local.json
-# edit the copy: set d365BaseUrl and d365DefaultCompany
+# Sign in. If az is only in the venv, call it by path:
+./.venv/Scripts/az.bat login
 
 ./scripts/deploy.ps1 `
   -ResourceGroup rg-requisitions `
   -Location eastus `
-  -ParametersFile ./infra/main.parameters.local.json
+  -SubscriptionId <your-subscription-id>
 ```
+
+`-SubscriptionId` is optional but worth passing when your account can see more
+than one subscription — it pins the deployment rather than trusting whichever
+one the CLI happens to have selected.
 
 This runs three passes — provision, build the image in ACR, redeploy pointing
 at the image — and prints the app URL along with the **managed identity client
 ID**. Keep that ID.
+
+### 1a. When ACR Tasks is blocked
+
+If the deploy fails at pass 2 with `TasksOperationsNotAllowed`, Microsoft has
+disabled server-side image builds on your subscription. This is common on
+trial, Visual Studio benefit, and abuse-flagged subscriptions, and **no
+permission change will fix it** — being Owner makes no difference. Filing a
+support request can lift it, but building on GitHub Actions is faster and
+better anyway.
+
+Nothing about the architecture changes; only the build moves.
+
+```powershell
+# Provision without attempting the blocked build
+./scripts/deploy.ps1 -ResourceGroup rg-d365-fsc-app -SkipImageBuild
+
+# Let GitHub deploy, with no stored secret
+./scripts/setup-github-oidc.ps1 `
+  -ResourceGroup rg-d365-fsc-app `
+  -GitHubRepo <owner>/<repo>
+```
+
+The second script prints three repository **secrets** and three repository
+**variables** to add under *Settings → Secrets and variables → Actions*. All six
+are identifiers rather than credentials — they grant nothing on their own,
+because Azure only issues access to a workflow run on the trusted branch of the
+trusted repository.
+
+Then push to `main`, and [.github/workflows/deploy.yml](.github/workflows/deploy.yml)
+builds the image, pushes it to your registry, and updates the container app.
+Every later deploy is just a push.
+
+The workflow identity holds exactly two role assignments, both scoped to single
+resources rather than the resource group:
+
+| Role | Scope | Why |
+|---|---|---|
+| `AcrPush` | the registry | push images |
+| `Contributor` | the container app | point it at a new image |
 
 ### 2. Register the identity in D365
 

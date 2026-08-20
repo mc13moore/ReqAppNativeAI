@@ -34,10 +34,21 @@ param(
   [string]$AuthClientId = '',
   [string]$AuthClientSecret = '',
 
-  [string]$ImageTag = 'latest'
+  [string]$ImageTag = 'latest',
+
+  # Pin the deployment to one subscription. Leave empty to use whichever the
+  # CLI currently has selected.
+  [string]$SubscriptionId = '',
+
+  # Skip the ACR Tasks build. Required on subscriptions where ACR Tasks is
+  # blocked (TasksOperationsNotAllowed) -- there the image is built by the
+  # GitHub Actions workflow instead, and this script only provisions.
+  [switch]$SkipImageBuild
 )
 
 $ErrorActionPreference = 'Stop'
+
+. "$PSScriptRoot/common.ps1"
 
 function Write-Step($message) {
   Write-Host ''
@@ -46,14 +57,22 @@ function Write-Step($message) {
 
 # --- Preflight ---------------------------------------------------------------
 
-if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-  throw 'Azure CLI is not installed. Install it with: winget install Microsoft.AzureCLI'
+Set-AzCaBundle
+$az = Resolve-AzCli
+Write-Host "Azure CLI: $az" -ForegroundColor DarkGray
+
+$account = & $az account show 2>$null | ConvertFrom-Json
+if (-not $account) {
+  throw "Not signed in to Azure. Run: & '$az' login"
 }
 
-$account = az account show 2>$null | ConvertFrom-Json
-if (-not $account) {
-  throw 'Not signed in to Azure. Run: az login'
+if ($SubscriptionId -and $account.id -ne $SubscriptionId) {
+  Write-Step "Switching to subscription $SubscriptionId"
+  & $az account set --subscription $SubscriptionId
+  if ($LASTEXITCODE -ne 0) { throw "Could not select subscription $SubscriptionId." }
+  $account = & $az account show | ConvertFrom-Json
 }
+
 Write-Host "Subscription: $($account.name) ($($account.id))" -ForegroundColor DarkGray
 
 $repoRoot = (Resolve-Path "$PSScriptRoot/..").Path
@@ -61,12 +80,26 @@ $repoRoot = (Resolve-Path "$PSScriptRoot/..").Path
 # --- Resource group ----------------------------------------------------------
 
 Write-Step "Ensuring resource group '$ResourceGroup' in $Location"
-az group create --name $ResourceGroup --location $Location --output none
+& $az group create --name $ResourceGroup --location $Location --output none
 if ($LASTEXITCODE -ne 0) { throw 'Failed to create the resource group.' }
 
 # --- Pass 1: infrastructure --------------------------------------------------
 
-Write-Step 'Deploying infrastructure (placeholder image)'
+# The template's containerImage parameter defaults to a placeholder. If an app
+# is already running a real image -- pushed by the GitHub Actions workflow, for
+# instance -- redeploying without pinning that image would silently roll the
+# app back to the placeholder. Carry the current image forward instead.
+$currentImage = & $az containerapp list --resource-group $ResourceGroup `
+  --query '[0].properties.template.containers[0].image' --output tsv 2>$null
+if ($LASTEXITCODE -ne 0) { $currentImage = '' }
+
+$preserveImage = $currentImage -and $currentImage -notmatch 'k8se/quickstart'
+
+if ($preserveImage) {
+  Write-Step "Deploying infrastructure (keeping current image: $currentImage)"
+} else {
+  Write-Step 'Deploying infrastructure (placeholder image)'
+}
 
 $deployArgs = @(
   'deployment', 'group', 'create',
@@ -75,11 +108,14 @@ $deployArgs = @(
   '--parameters', "@$ParametersFile",
   '--output', 'json'
 )
+if ($preserveImage) {
+  $deployArgs += @('--parameters', "containerImage=$currentImage")
+}
 if ($AuthClientId) {
   $deployArgs += @('--parameters', "authClientId=$AuthClientId", "authClientSecret=$AuthClientSecret")
 }
 
-$result = az @deployArgs | ConvertFrom-Json
+$result = & $az @deployArgs | ConvertFrom-Json
 if ($LASTEXITCODE -ne 0) { throw 'Infrastructure deployment failed.' }
 
 $outputs = $result.properties.outputs
@@ -90,30 +126,52 @@ $appName = $outputs.appName.value
 
 # --- Pass 2: build the image -------------------------------------------------
 
-Write-Step "Building image in ACR '$registryName' (this runs in Azure, not locally)"
-
 $image = "requisitions:$ImageTag"
-az acr build --registry $registryName --image $image --file "$repoRoot/Dockerfile" $repoRoot --output none
-if ($LASTEXITCODE -ne 0) { throw 'Container image build failed.' }
 
-# --- Pass 3: point the app at the real image ---------------------------------
+if ($SkipImageBuild) {
+  Write-Step 'Skipping image build (-SkipImageBuild)'
+  Write-Host '    The GitHub Actions workflow builds and deploys the image.' -ForegroundColor DarkGray
+} else {
+  Write-Step "Building image in ACR '$registryName' (this runs in Azure, not locally)"
 
-Write-Step 'Redeploying with the built image'
+  & $az acr build --registry $registryName --image $image --file "$repoRoot/Dockerfile" $repoRoot --output none
 
-$deployArgs = @(
-  'deployment', 'group', 'create',
-  '--resource-group', $ResourceGroup,
-  '--template-file', $BicepFile,
-  '--parameters', "@$ParametersFile",
-  '--parameters', "containerImage=$loginServer/$image",
-  '--output', 'json'
-)
-if ($AuthClientId) {
-  $deployArgs += @('--parameters', "authClientId=$AuthClientId", "authClientSecret=$AuthClientSecret")
+  if ($LASTEXITCODE -ne 0) {
+    throw @"
+Container image build failed.
+
+If the error above was TasksOperationsNotAllowed, ACR Tasks is disabled on this
+subscription and no permission change will fix it -- Microsoft restricts it on
+trial, Visual Studio benefit, and flagged subscriptions.
+
+Build on GitHub Actions instead:
+
+    ./scripts/deploy.ps1 -ResourceGroup $ResourceGroup -SkipImageBuild
+    ./scripts/setup-github-oidc.ps1 -ResourceGroup $ResourceGroup -GitHubRepo <owner/repo>
+
+then push to main. See the README section "When ACR Tasks is blocked".
+"@
+  }
+
+  # --- Pass 3: point the app at the real image -------------------------------
+
+  Write-Step 'Redeploying with the built image'
+
+  $deployArgs = @(
+    'deployment', 'group', 'create',
+    '--resource-group', $ResourceGroup,
+    '--template-file', $BicepFile,
+    '--parameters', "@$ParametersFile",
+    '--parameters', "containerImage=$loginServer/$image",
+    '--output', 'json'
+  )
+  if ($AuthClientId) {
+    $deployArgs += @('--parameters', "authClientId=$AuthClientId", "authClientSecret=$AuthClientSecret")
+  }
+
+  $result = & $az @deployArgs | ConvertFrom-Json
+  if ($LASTEXITCODE -ne 0) { throw 'Final deployment failed.' }
 }
-
-$result = az @deployArgs | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0) { throw 'Final deployment failed.' }
 
 $appUrl = $result.properties.outputs.appUrl.value
 
@@ -138,7 +196,14 @@ Write-Host "      Client Id : $identityClientId"
 Write-Host '      Name      : Requisition app (or anything descriptive)'
 Write-Host '      User ID   : a service account user with requisition permissions'
 Write-Host ''
-Write-Host "  Then open $appUrl/diagnostics to verify the connection."
+if ($SkipImageBuild) {
+  Write-Host '  The container app is running a placeholder image until the' -ForegroundColor Yellow
+  Write-Host '  GitHub Actions workflow pushes the real one. Next:' -ForegroundColor Yellow
+  Write-Host "    ./scripts/setup-github-oidc.ps1 -ResourceGroup $ResourceGroup -GitHubRepo <owner/repo>"
+  Write-Host '    then push to main.'
+} else {
+  Write-Host "  Then open $appUrl/diagnostics to verify the connection."
+}
 Write-Host ''
 
 if (-not $AuthClientId) {

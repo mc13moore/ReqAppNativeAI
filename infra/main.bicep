@@ -256,7 +256,11 @@ resource auth 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (authEna
         registration: {
           clientId: authClientId
           clientSecretSettingName: 'auth-client-secret'
-          openIdIssuer: 'https://login.microsoftonline.com/${tenantId}/v2.0'
+          // az.environment() rather than a literal host so this still resolves
+          // if the deployment ever targets a sovereign cloud. The az. prefix is
+          // required here because the managed environment resource below is
+          // also named `environment` and would otherwise shadow the function.
+          openIdIssuer: '${az.environment().authentication.loginEndpoint}${tenantId}/v2.0'
         }
         validation: {
           allowedAudiences: [
