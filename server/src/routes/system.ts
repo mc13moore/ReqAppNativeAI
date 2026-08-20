@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { authEnabled, config } from '../config.js';
 import { readUser, requireUser } from '../auth/user.js';
-import { getD365Token } from '../auth/d365Token.js';
-import { list } from '../d365/client.js';
+import { describeD365Credential, getD365Token } from '../auth/d365Token.js';
+import { D365Error, list } from '../d365/client.js';
 import { headerEntity, lineEntity } from '../d365/entities.js';
 
 export default async function systemRoutes(app: FastifyInstance) {
@@ -36,25 +36,52 @@ export default async function systemRoutes(app: FastifyInstance) {
   app.get('/health/d365', { preHandler: requireUser }, async (_request, reply) => {
     const started = Date.now();
 
+    const credentialInfo = describeD365Credential();
+
     try {
       await getD365Token();
     } catch (err) {
       return reply.code(503).send({
         status: 'failed',
         stage: 'token',
+        credential: credentialInfo,
         message:
-          'Could not acquire an Entra ID token for the D365 environment. Check the managed identity assignment and D365_BASE_URL.',
+          credentialInfo.mode.startsWith('service principal')
+            ? 'Could not acquire an Entra ID token using the configured service principal. Check D365_TENANT_ID, D365_CLIENT_ID and D365_CLIENT_SECRET, and that the secret has not expired.'
+            : 'Could not acquire an Entra ID token for the D365 environment. Check the managed identity assignment and D365_BASE_URL.',
         detail: err instanceof Error ? err.message : String(err),
       });
     }
 
+    const credential = credentialInfo;
+
     try {
       await list(headerEntity.entitySet, { top: 1, select: ['dataAreaId'], crossCompany: true });
     } catch (err) {
+      const status = err instanceof D365Error ? err.status : undefined;
+
+      // 401 and 404 fail in the same place but mean opposite things, and
+      // conflating them sends people to rewrite entity names when the real
+      // problem is that D365 never accepted the caller.
+      const message =
+        status === 401
+          ? [
+              'D365 accepted the connection but rejected the identity (401).',
+              `The token was issued for client ${credential.clientId ?? 'unknown'} using ${credential.mode}.`,
+              'Either that client ID is not listed under System administration > Setup >',
+              'Microsoft Entra ID applications, or it was issued by a different Entra tenant',
+              'than the one D365 trusts. A managed identity cannot be used across tenants.',
+            ].join(' ')
+          : status === 404
+            ? `The entity set "${headerEntity.entitySet}" does not exist in this environment (404). Use the entity explorer below to find the correct name, then update server/src/d365/entities.ts.`
+            : `Token acquired, but querying ${headerEntity.entitySet} failed.`;
+
       return reply.code(503).send({
         status: 'failed',
         stage: 'query',
-        message: `Token acquired, but querying ${headerEntity.entitySet} failed. Confirm the identity is registered under System administration > Setup > Microsoft Entra ID applications, and that the entity name is correct.`,
+        upstreamStatus: status,
+        credential,
+        message,
         detail: err instanceof Error ? err.message : String(err),
       });
     }
@@ -62,6 +89,7 @@ export default async function systemRoutes(app: FastifyInstance) {
     return {
       status: 'ok',
       environment: config.D365_BASE_URL,
+      credential,
       elapsedMs: Date.now() - started,
     };
   });

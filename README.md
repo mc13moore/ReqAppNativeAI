@@ -218,6 +218,47 @@ resources rather than the resource group:
 | `AcrPush` | the registry | push images |
 | `Contributor` | the container app | point it at a new image |
 
+### 1b. When D365 is in a different Entra tenant
+
+The managed identity path assumes the Azure subscription and the D365
+environment share one Entra tenant. If they do not — a personal or partner
+subscription against a corporate D365, say — **managed identity cannot work at
+all**. A managed identity is a service principal belonging to exactly one
+tenant. Entra will still issue a token, but D365 rejects it with a bare `401`,
+because the issuer is not the tenant it trusts. No amount of registering the
+identity in D365 changes this.
+
+The symptom is distinctive: `/diagnostics` reports **token acquired** and then
+fails the query with `401`. A wrong entity name gives `404`, not `401`.
+
+The fix is an app registration created **inside the D365 tenant**, listed under
+*System administration → Setup → Microsoft Entra ID applications* and mapped to
+a user, exactly as the managed identity would have been. Then:
+
+```powershell
+./scripts/deploy.ps1 `
+  -ResourceGroup rg-d365-fsc-app `
+  -SkipImageBuild `
+  -D365TenantId <d365-tenant-id> `
+  -D365ClientId <app-registration-client-id> `
+  -D365ClientSecret '<secret>'
+```
+
+The secret is stored as a Container Apps secret and injected via `secretRef`,
+so it never appears in the image, the template outputs, or the environment
+listing in the portal. Supply all three or none — a partial set is rejected at
+startup rather than failing later as a confusing `401`.
+
+**This trade-off is real and worth naming.** Cross-tenant means giving up the
+no-secrets property that made managed identity attractive. The secret needs
+rotating before it expires, and rotation means a redeploy. There is no
+cross-tenant equivalent of managed identity; this is the supported approach,
+not a workaround.
+
+The managed identity still exists and is still used — it is what pulls the
+image from the container registry. It is simply no longer offered to the
+application as a D365 credential.
+
 ### 2. Register the identity in D365
 
 This is the step that cannot be automated from Azure, and the one that causes

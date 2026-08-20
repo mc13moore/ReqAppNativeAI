@@ -40,6 +40,16 @@ param tenantId string = subscription().tenantId
 @description('Optional comma-separated allowlist of sign-in names, for example "a@x.com,b@x.com". Empty allows anyone who can sign in. This narrows access behind Entra ID; it does not replace it.')
 param allowedUsers string = ''
 
+@description('Entra tenant of the D365 environment. Set only when D365 lives in a different tenant than this subscription, which rules out using the managed identity.')
+param d365TenantId string = ''
+
+@description('Application (client) ID of an app registration created in the D365 tenant and listed in D365 under System administration > Setup > Microsoft Entra ID applications.')
+param d365ClientId string = ''
+
+@description('Client secret for that app registration. Stored as a Container Apps secret and never surfaced in the image or template output.')
+@secure()
+param d365ClientSecret string = ''
+
 @description('Scale-to-zero keeps idle cost at nothing. Raise to 1 only if cold starts become a problem.')
 @minValue(0)
 @maxValue(5)
@@ -60,6 +70,10 @@ var environmentName = '${namePrefix}-env'
 var appName = '${namePrefix}-app'
 var workspaceName = '${namePrefix}-logs'
 var authEnabled = !empty(authClientId)
+
+// Cross-tenant D365 access requires all three values; anything less would leave
+// the app silently falling back to the managed identity, which cannot work.
+var d365ServicePrincipal = !empty(d365ClientId) && !empty(d365ClientSecret) && !empty(d365TenantId)
 
 // ---------------------------------------------------------------------------
 // Identity
@@ -168,12 +182,20 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
           identity: identity.id
         }
       ]
-      secrets: authEnabled ? [
-        {
-          name: 'auth-client-secret'
-          value: authClientSecret
-        }
-      ] : []
+      secrets: concat(
+        authEnabled ? [
+          {
+            name: 'auth-client-secret'
+            value: authClientSecret
+          }
+        ] : [],
+        d365ServicePrincipal ? [
+          {
+            name: 'd365-client-secret'
+            value: d365ClientSecret
+          }
+        ] : []
+      )
     }
     template: {
       containers: [
@@ -186,17 +208,30 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('0.25')
             memory: '0.5Gi'
           }
-          env: [
-            { name: 'NODE_ENV', value: 'production' }
-            { name: 'PORT', value: '8080' }
-            { name: 'D365_BASE_URL', value: d365BaseUrl }
-            { name: 'D365_DEFAULT_COMPANY', value: d365DefaultCompany }
-            { name: 'D365_HEADER_ENTITY', value: d365HeaderEntity }
-            { name: 'D365_LINE_ENTITY', value: d365LineEntity }
-            { name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID', value: identity.properties.clientId }
-            { name: 'AUTH_MODE', value: authEnabled ? 'easyauth' : 'none' }
-            { name: 'ALLOWED_USERS', value: allowedUsers }
-          ]
+          env: concat(
+            [
+              { name: 'NODE_ENV', value: 'production' }
+              { name: 'PORT', value: '8080' }
+              { name: 'D365_BASE_URL', value: d365BaseUrl }
+              { name: 'D365_DEFAULT_COMPANY', value: d365DefaultCompany }
+              { name: 'D365_HEADER_ENTITY', value: d365HeaderEntity }
+              { name: 'D365_LINE_ENTITY', value: d365LineEntity }
+              { name: 'AUTH_MODE', value: authEnabled ? 'easyauth' : 'none' }
+              { name: 'ALLOWED_USERS', value: allowedUsers }
+            ],
+            // The managed identity is always assigned -- it is what pulls the
+            // image from the registry -- but it is only offered to the app as a
+            // D365 credential when D365 shares this tenant. Advertising it
+            // cross-tenant would just produce 401s that look like a
+            // registration mistake.
+            d365ServicePrincipal ? [
+              { name: 'D365_TENANT_ID', value: d365TenantId }
+              { name: 'D365_CLIENT_ID', value: d365ClientId }
+              { name: 'D365_CLIENT_SECRET', secretRef: 'd365-client-secret' }
+            ] : [
+              { name: 'AZURE_MANAGED_IDENTITY_CLIENT_ID', value: identity.properties.clientId }
+            ]
+          )
           probes: [
             {
               type: 'Liveness'

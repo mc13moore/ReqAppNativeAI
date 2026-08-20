@@ -37,6 +37,18 @@ param(
   # Optional allowlist of sign-in names. Empty allows anyone who can sign in.
   [string[]]$AllowedUsers = @(),
 
+  <#
+    Credentials for reaching D365 when it lives in a different Entra tenant
+    than this subscription. A managed identity belongs to a single tenant and
+    is rejected by D365 with a 401 across a tenant boundary, so an app
+    registration created inside the D365 tenant is required instead.
+
+    Supply all three, or none to keep using the managed identity.
+  #>
+  [string]$D365TenantId = '',
+  [string]$D365ClientId = '',
+  [string]$D365ClientSecret = '',
+
   [string]$ImageTag = 'latest',
 
   # Pin the deployment to one subscription. Leave empty to use whichever the
@@ -78,13 +90,38 @@ if ($SubscriptionId -and $account.id -ne $SubscriptionId) {
 
 Write-Host "Subscription: $($account.name) ($($account.id))" -ForegroundColor DarkGray
 
+$d365Supplied = @($D365TenantId, $D365ClientId, $D365ClientSecret | Where-Object { $_ }).Count
+if ($d365Supplied -gt 0 -and $d365Supplied -lt 3) {
+  throw 'D365TenantId, D365ClientId and D365ClientSecret must be supplied together, or all omitted.'
+}
+$useD365ServicePrincipal = $d365Supplied -eq 3
+
 $repoRoot = (Resolve-Path "$PSScriptRoot/..").Path
 
 # --- Resource group ----------------------------------------------------------
 
-Write-Step "Ensuring resource group '$ResourceGroup' in $Location"
-& $az group create --name $ResourceGroup --location $Location --output none
-if ($LASTEXITCODE -ne 0) { throw 'Failed to create the resource group.' }
+# A resource group's location is fixed at creation, and `az group create`
+# rejects a different one rather than ignoring it. Only create when absent, so
+# -Location is what to use for a new group rather than an assertion about an
+# existing one.
+$groupExists = (& $az group exists --name $ResourceGroup) -eq 'true'
+
+if ($groupExists) {
+  $existingLocation = & $az group show --name $ResourceGroup --query location --output tsv
+  Write-Step "Using existing resource group '$ResourceGroup' in $existingLocation"
+
+  if ($PSBoundParameters.ContainsKey('Location') -and $Location -ne $existingLocation) {
+    Write-Host "    Ignoring -Location '$Location': a resource group cannot be moved." -ForegroundColor Yellow
+  }
+
+  # Everything in the template defaults to resourceGroup().location, so
+  # resources follow the group rather than this parameter.
+  $Location = $existingLocation
+} else {
+  Write-Step "Creating resource group '$ResourceGroup' in $Location"
+  & $az group create --name $ResourceGroup --location $Location --output none
+  if ($LASTEXITCODE -ne 0) { throw "Failed to create resource group '$ResourceGroup' in '$Location'." }
+}
 
 # --- Pass 1: infrastructure --------------------------------------------------
 
@@ -119,6 +156,9 @@ if ($AuthClientId) {
 }
 if ($AllowedUsers.Count -gt 0) {
   $deployArgs += @('--parameters', "allowedUsers=$($AllowedUsers -join ',')")
+}
+if ($useD365ServicePrincipal) {
+  $deployArgs += @('--parameters', "d365TenantId=$D365TenantId", "d365ClientId=$D365ClientId", "d365ClientSecret=$D365ClientSecret")
 }
 
 $result = & $az @deployArgs | ConvertFrom-Json
@@ -176,6 +216,9 @@ then push to main. See the README section "When ACR Tasks is blocked".
   }
   if ($AllowedUsers.Count -gt 0) {
     $deployArgs += @('--parameters', "allowedUsers=$($AllowedUsers -join ',')")
+  }
+  if ($useD365ServicePrincipal) {
+    $deployArgs += @('--parameters', "d365TenantId=$D365TenantId", "d365ClientId=$D365ClientId", "d365ClientSecret=$D365ClientSecret")
   }
 
   $result = & $az @deployArgs | ConvertFrom-Json

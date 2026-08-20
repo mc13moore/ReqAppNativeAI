@@ -41,11 +41,27 @@ const schema = z.object({
   D365_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
   /**
-   * Client ID of the user-assigned managed identity. Set in Azure; leave unset
-   * locally so DefaultAzureCredential falls back to the Azure CLI login or to
-   * AZURE_CLIENT_ID/AZURE_CLIENT_SECRET/AZURE_TENANT_ID.
+   * Client ID of the user-assigned managed identity. Only usable when the
+   * Azure subscription and the D365 environment share an Entra tenant.
    */
   AZURE_MANAGED_IDENTITY_CLIENT_ID: z.string().optional(),
+
+  /**
+   * Explicit service-principal credentials for D365, used when the D365
+   * environment lives in a different Entra tenant than the Azure subscription
+   * hosting this app.
+   *
+   * A managed identity exists in exactly one tenant and cannot be used across
+   * tenants: the token would be issued by the wrong issuer and D365 rejects it
+   * with a 401. An app registration created inside the D365 tenant, and listed
+   * under System administration > Setup > Microsoft Entra ID applications, is
+   * the only workable option in that topology.
+   *
+   * Supply all three or none.
+   */
+  D365_TENANT_ID: z.string().optional(),
+  D365_CLIENT_ID: z.string().optional(),
+  D365_CLIENT_SECRET: z.string().optional(),
 
   /**
    * 'easyauth' trusts the X-MS-CLIENT-PRINCIPAL headers injected by Container
@@ -91,6 +107,26 @@ function load(): Config {
       .join('\n');
     throw new Error(`Invalid environment configuration:\n${detail}`);
   }
+
+  const { D365_TENANT_ID, D365_CLIENT_ID, D365_CLIENT_SECRET } = parsed.data;
+  const supplied = [D365_TENANT_ID, D365_CLIENT_ID, D365_CLIENT_SECRET].filter(Boolean).length;
+
+  // Partial credentials are always a mistake, and failing here is far kinder
+  // than a 401 from D365 an hour later.
+  if (supplied > 0 && supplied < 3) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  D365_TENANT_ID, D365_CLIENT_ID and D365_CLIENT_SECRET must be set together.\n' +
+        `  Currently set: ${[
+          D365_TENANT_ID && 'D365_TENANT_ID',
+          D365_CLIENT_ID && 'D365_CLIENT_ID',
+          D365_CLIENT_SECRET && 'D365_CLIENT_SECRET',
+        ]
+          .filter(Boolean)
+          .join(', ')}`,
+    );
+  }
+
   return parsed.data;
 }
 
@@ -98,3 +134,15 @@ export const config = load();
 
 /** True when user auth is enforced. */
 export const authEnabled = config.AUTH_MODE === 'easyauth';
+
+/**
+ * Which credential the app uses to reach D365.
+ *
+ * 'service-principal' is required when D365 sits in a different Entra tenant
+ * than this app; 'default' covers managed identity in Azure and `az login`
+ * locally, both of which only work same-tenant.
+ */
+export const d365AuthMode: 'service-principal' | 'default' =
+  config.D365_CLIENT_ID && config.D365_CLIENT_SECRET && config.D365_TENANT_ID
+    ? 'service-principal'
+    : 'default';
