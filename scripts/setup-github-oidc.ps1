@@ -35,6 +35,21 @@ param(
 
   [string]$Branch = 'main',
 
+  <#
+    Extra subject strings to trust, in addition to the standard
+    repo:<owner>/<repo>:ref:refs/heads/<branch> form.
+
+    Needed when the repository uses GitHub's immutable subject claims, where
+    the numeric owner and repository IDs are embedded in the subject, like:
+
+      repo:owner@216615657/repo@1336274125:ref:refs/heads/main
+
+    Azure matches the subject literally, so a workflow presenting that form
+    will be rejected unless it is registered too. If a run fails with
+    AADSTS700213, copy the exact subject out of the error and pass it here.
+  #>
+  [string[]]$AdditionalSubjects = @(),
+
   [string]$DisplayName = 'ReqApp GitHub Deploy',
 
   [string]$SubscriptionId = ''
@@ -149,6 +164,16 @@ Write-Step "Trusting GitHub Actions from $GitHubRepo"
 $credentials = @(
   @{ name = "github-$Branch"; subject = "repo:${GitHubRepo}:ref:refs/heads/$Branch" }
 )
+
+# Registering extra subjects is additive and safe: each one still pins a single
+# repository and branch, so trusting both the standard and immutable-ID forms
+# does not widen access -- it only tolerates either claim format.
+$index = 0
+foreach ($extra in $AdditionalSubjects) {
+  if (-not $extra) { continue }
+  $index++
+  $credentials += @{ name = "github-extra-$index"; subject = $extra }
+}
 
 $existing = & $az ad app federated-credential list --id $clientId --output json | ConvertFrom-Json
 
