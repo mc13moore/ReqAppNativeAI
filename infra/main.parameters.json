@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "namePrefix": {
+      "value": "reqapp"
+    },
+    "d365BaseUrl": {
+      "value": "https://armanino-train.sandbox.operations.dynamics.com"
+    },
+    "d365DefaultCompany": {
+      "value": "usmf"
+    },
+    "d365HeaderEntity": {
+      "value": "PurchaseRequisitionHeaders"
+    },
+    "d365LineEntity": {
+      "value": "PurchaseRequisitionLines"
+    },
+    "minReplicas": {
+      "value": 0
+    },
+    "maxReplicas": {
+      "value": 2
+    }
+  }
+}
