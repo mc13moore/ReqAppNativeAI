@@ -1,0 +1,50 @@
+# Secrets and local configuration -- never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+local.settings.json
+appsettings.Development.json
+
+# Azure
+.azure/
+*.publishsettings
+*.PublishSettings
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+out/
+
+# .NET
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
