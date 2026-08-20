@@ -174,30 +174,47 @@ $appName = $outputs.appName.value
 
 $image = "requisitions:$ImageTag"
 
+$imageBuilt = $false
+
 if ($SkipImageBuild) {
   Write-Step 'Skipping image build (-SkipImageBuild)'
   Write-Host '    The GitHub Actions workflow builds and deploys the image.' -ForegroundColor DarkGray
 } else {
   Write-Step "Building image in ACR '$registryName' (this runs in Azure, not locally)"
 
-  & $az acr build --registry $registryName --image $image --file "$repoRoot/Dockerfile" $repoRoot --output none
-
-  if ($LASTEXITCODE -ne 0) {
-    throw @"
-Container image build failed.
-
-If the error above was TasksOperationsNotAllowed, ACR Tasks is disabled on this
-subscription and no permission change will fix it -- Microsoft restricts it on
-trial, Visual Studio benefit, and flagged subscriptions.
-
-Build on GitHub Actions instead:
-
-    ./scripts/deploy.ps1 -ResourceGroup $ResourceGroup -SkipImageBuild
-    ./scripts/setup-github-oidc.ps1 -ResourceGroup $ResourceGroup -GitHubRepo <owner/repo>
-
-then push to main. See the README section "When ACR Tasks is blocked".
-"@
+  # stderr goes to a file rather than through 2>&1: in Windows PowerShell that
+  # redirection wraps each line in an ErrorRecord and, under
+  # $ErrorActionPreference = 'Stop', throws before the exit code can be read.
+  $errFile = [System.IO.Path]::GetTempFileName()
+  try {
+    & $az acr build --registry $registryName --image $image --file "$repoRoot/Dockerfile" $repoRoot --output none 2>$errFile
+    $buildExit = $LASTEXITCODE
+    $buildErr = if (Test-Path $errFile) { Get-Content $errFile -Raw } else { '' }
+  } finally {
+    Remove-Item $errFile -Force -ErrorAction SilentlyContinue
   }
+
+  if ($buildExit -eq 0) {
+    $imageBuilt = $true
+  } elseif ($buildErr -match 'TasksOperationsNotAllowed') {
+    # Not a recoverable condition and not this script's fault: Microsoft blocks
+    # ACR Tasks on some subscription types. The infrastructure deployment above
+    # already succeeded, so failing the whole run here would misrepresent what
+    # happened and discard that work.
+    Write-Host ''
+    Write-Host '  ACR Tasks is disabled on this subscription, so the image was not built.' -ForegroundColor Yellow
+    Write-Host '  Infrastructure and configuration were deployed successfully.' -ForegroundColor Yellow
+    Write-Host '  No permission change fixes this -- build via GitHub Actions instead:' -ForegroundColor Yellow
+    Write-Host "      ./scripts/setup-github-oidc.ps1 -ResourceGroup $ResourceGroup -GitHubRepo <owner/repo>" -ForegroundColor Yellow
+    Write-Host '      git push' -ForegroundColor Yellow
+    Write-Host '  Pass -SkipImageBuild to skip this step silently next time.' -ForegroundColor DarkGray
+  } else {
+    Write-Host $buildErr
+    throw 'Container image build failed. See the output above.'
+  }
+}
+
+if ($imageBuilt) {
 
   # --- Pass 3: point the app at the real image -------------------------------
 
@@ -248,11 +265,13 @@ Write-Host "      Client Id : $identityClientId"
 Write-Host '      Name      : Requisition app (or anything descriptive)'
 Write-Host '      User ID   : a service account user with requisition permissions'
 Write-Host ''
-if ($SkipImageBuild) {
-  Write-Host '  The container app is running a placeholder image until the' -ForegroundColor Yellow
-  Write-Host '  GitHub Actions workflow pushes the real one. Next:' -ForegroundColor Yellow
-  Write-Host "    ./scripts/setup-github-oidc.ps1 -ResourceGroup $ResourceGroup -GitHubRepo <owner/repo>"
-  Write-Host '    then push to main.'
+if (-not $imageBuilt) {
+  Write-Host '  Configuration was applied, but no image was built by this run.' -ForegroundColor Yellow
+  Write-Host '  The container app keeps whatever image it already had, so any' -ForegroundColor Yellow
+  Write-Host '  application changes need a GitHub Actions build to take effect:' -ForegroundColor Yellow
+  Write-Host '    git push'
+  Write-Host ''
+  Write-Host "  Then open $appUrl/diagnostics to verify the connection."
 } else {
   Write-Host "  Then open $appUrl/diagnostics to verify the connection."
 }
