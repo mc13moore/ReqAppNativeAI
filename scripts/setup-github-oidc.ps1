@@ -75,7 +75,35 @@ Write-Step 'Locating the registry and container app'
 
 $registryName = & $az acr list --resource-group $ResourceGroup --query '[0].name' --output tsv
 if ($LASTEXITCODE -ne 0 -or -not $registryName) {
-  throw "No container registry found in '$ResourceGroup'. Run deploy.ps1 first."
+  # Look wider before giving up. The usual causes are a resource group name
+  # that differs from the one deploy.ps1 used, or a different subscription
+  # being selected now than when the deployment ran -- both of which are much
+  # easier to see than to guess at.
+  $elsewhere = & $az acr list --query '[].{name:name,resourceGroup:resourceGroup,location:location}' --output json | ConvertFrom-Json
+  $groups = & $az group list --query '[].name' --output tsv
+
+  $detail = if ($elsewhere) {
+    "Registries visible in this subscription:`n" +
+    (($elsewhere | ForEach-Object { "    $($_.name)  (resource group: $($_.resourceGroup), $($_.location))" }) -join "`n")
+  } else {
+    'No container registries are visible in this subscription at all.'
+  }
+
+  throw @"
+No container registry found in resource group '$ResourceGroup'.
+
+Current subscription: $($account.name) ($subId)
+
+$detail
+
+Resource groups in this subscription:
+    $($groups -join "`n    ")
+
+If the registry is listed above under a different resource group, re-run this
+script with that -ResourceGroup. If nothing is listed, you are probably in a
+different subscription than the one you deployed to -- re-run with
+-SubscriptionId <the id you deployed with>.
+"@
 }
 
 $registryId = & $az acr show --name $registryName --resource-group $ResourceGroup --query id --output tsv
