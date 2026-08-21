@@ -1,19 +1,10 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { DataGrid, type Column } from '../components/DataGrid';
-import { IconFilter, IconSearch, IconSync } from '../components/Icons';
-import {
-  Badge,
-  ErrorBanner,
-  Person,
-  Skeleton,
-  priorityTone,
-  statusTone,
-  syncTone,
-  SYNC_LABEL,
-} from '../components/primitives';
+import { IconAlert, IconFilter, IconSearch, IconSync } from '../components/Icons';
+import { Badge, ErrorBanner, Skeleton, statusTone } from '../components/primitives';
 import { api } from '../lib/api';
-import { formatRelative, money } from '../lib/format';
+import { formatDate, money } from '../lib/format';
 import { useAsync, useDebounced } from '../lib/hooks';
 import type { RequisitionSummary } from '../lib/types';
 
@@ -26,37 +17,38 @@ export function WorkspacePage() {
   const [searchInput, setSearchInput] = useState(params.get('search') ?? '');
   const search = useDebounced(searchInput, 300);
 
-  const stage = params.get('stage') ?? '';
-  const department = params.get('department') ?? '';
+  const status = params.get('status') ?? '';
+  const company = params.get('company') ?? '';
   const vendor = params.get('vendor') ?? '';
-  const sync = params.get('sync') ?? '';
+  const category = params.get('category') ?? '';
   const page = Math.max(0, Number(params.get('page') ?? 0));
 
   const state = useAsync(
     () =>
       api.requisitions({
         search: search || undefined,
-        stage: stage || undefined,
-        department: department || undefined,
+        status: status || undefined,
+        company: company || undefined,
         vendor: vendor || undefined,
-        sync: sync || undefined,
+        category: category || undefined,
         top: PAGE_SIZE,
         skip: page * PAGE_SIZE,
       }),
-    [search, stage, department, vendor, sync, page],
+    [search, status, company, vendor, category, page],
   );
 
   const setParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value);
     else next.delete(key);
-    // Any filter change invalidates the current offset.
     if (key !== 'page') next.delete('page');
     setParams(next, { replace: true });
   };
 
   const open = (row: RequisitionSummary) =>
-    navigate(`/requisitions/${row.company.toLowerCase()}/${row.requisitionNumber}`);
+    navigate(
+      `/requisitions/${(row.company || 'usmf').toLowerCase()}/${encodeURIComponent(row.requisitionNumber)}`,
+    );
 
   const columns: Column<RequisitionSummary>[] = [
     {
@@ -68,47 +60,14 @@ export function WorkspacePage() {
           <div className="mono" style={{ fontWeight: 650 }}>
             {r.requisitionNumber}
           </div>
-          <div className="tiny dim" style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {r.name}
-          </div>
-        </div>
-      ),
-    },
-    {
-      key: 'requester',
-      header: 'Requester',
-      sortValue: (r) => r.requester.name,
-      render: (r) => (
-        <Person
-          name={r.requester.name}
-          initials={r.requester.initials}
-          meta={r.department}
-          size="sm"
-        />
-      ),
-    },
-    {
-      key: 'vendor',
-      header: 'Vendor',
-      sortValue: (r) => r.vendor,
-      render: (r) => (
-        <div>
-          <div className="small">{r.vendor}</div>
-          <div className="tiny dim">{r.category}</div>
-        </div>
-      ),
-    },
-    {
-      key: 'totalAmount',
-      header: 'Amount',
-      align: 'right',
-      sortValue: (r) => r.totalAmount,
-      render: (r) => (
-        <div>
-          <div style={{ fontWeight: 650 }}>{money(r.totalAmount, r.currency)}</div>
-          <div className="tiny dim">
-            {r.lineCount} line{r.lineCount === 1 ? '' : 's'}
-          </div>
+          {r.name && (
+            <div
+              className="tiny dim"
+              style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {r.name}
+            </div>
+          )}
         </div>
       ),
     },
@@ -116,40 +75,97 @@ export function WorkspacePage() {
       key: 'status',
       header: 'Status',
       sortValue: (r) => r.status,
-      render: (r) => <Badge tone={statusTone(r.status)}>{r.status}</Badge>,
+      render: (r) =>
+        r.status ? (
+          <Badge tone={statusTone(r.status)}>{r.status}</Badge>
+        ) : (
+          <span className="dim">—</span>
+        ),
     },
     {
-      key: 'approvalStage',
-      header: 'Stage',
-      sortValue: (r) => r.approvalStage,
-      render: (r) => <span className="small">{r.approvalStage}</span>,
+      key: 'company',
+      header: 'Legal entity',
+      sortValue: (r) => r.company,
+      render: (r) => <span className="small">{r.company || <span className="dim">—</span>}</span>,
     },
     {
-      key: 'priority',
-      header: 'Priority',
-      sortValue: (r) => r.priority,
-      render: (r) => <Badge tone={priorityTone(r.priority)}>{r.priority}</Badge>,
-    },
-    {
-      key: 'syncState',
-      header: 'D365',
-      sortValue: (r) => r.syncState,
+      key: 'preparer',
+      header: 'Preparer',
+      sortValue: (r) => r.preparerPersonnelNumber,
       render: (r) => (
-        <Badge tone={syncTone(r.syncState)} dot>
-          {SYNC_LABEL[r.syncState] ?? r.syncState}
-        </Badge>
-      ),
-    },
-    {
-      key: 'ageDays',
-      header: 'Age',
-      align: 'right',
-      sortValue: (r) => r.ageDays,
-      render: (r) => (
-        <span className={r.ageDays > 20 ? 'small' : 'small dim'} style={r.ageDays > 20 ? { color: 'var(--warning)', fontWeight: 650 } : undefined}>
-          {r.ageDays}d
+        <span className="mono small">
+          {r.preparerPersonnelNumber || <span className="dim">—</span>}
         </span>
       ),
+    },
+    {
+      key: 'vendors',
+      header: 'Vendor',
+      sortValue: (r) => r.vendors.join(','),
+      render: (r) =>
+        r.vendors.length > 0 ? (
+          <div>
+            <div className="mono small">{r.vendors[0]}</div>
+            {r.vendors.length > 1 && <div className="tiny dim">+{r.vendors.length - 1} more</div>}
+          </div>
+        ) : (
+          <span className="dim">—</span>
+        ),
+    },
+    {
+      key: 'categories',
+      header: 'Category',
+      sortValue: (r) => r.categories.join(','),
+      render: (r) =>
+        r.categories.length > 0 ? (
+          <div>
+            <div className="small">{r.categories[0]}</div>
+            {r.categories.length > 1 && (
+              <div className="tiny dim">+{r.categories.length - 1} more</div>
+            )}
+          </div>
+        ) : (
+          <span className="dim">—</span>
+        ),
+    },
+    {
+      key: 'totalAmount',
+      header: 'Amount',
+      align: 'right',
+      sortValue: (r) => r.totalAmount,
+      render: (r) =>
+        r.hasLineData ? (
+          <div>
+            <div style={{ fontWeight: 650 }}>{money(r.totalAmount, r.currency || 'USD')}</div>
+            <div className="tiny dim">
+              {r.lineCount} line{r.lineCount === 1 ? '' : 's'}
+            </div>
+          </div>
+        ) : (
+          // A zero here would read as "this requisition is worth nothing"
+          // rather than "no lines were returned for it".
+          <span className="dim tiny">no line data</span>
+        ),
+    },
+    {
+      key: 'requestedDate',
+      header: 'Requested',
+      align: 'right',
+      sortValue: (r) => r.requestedDate,
+      render: (r) => <span className="small dim">{formatDate(r.requestedDate)}</span>,
+    },
+    {
+      key: 'onHold',
+      header: 'Hold',
+      sortValue: (r) => (r.onHold ? 1 : 0),
+      render: (r) =>
+        r.onHold ? (
+          <Badge tone="warning" dot>
+            On hold
+          </Badge>
+        ) : (
+          <span className="dim">—</span>
+        ),
     },
   ];
 
@@ -157,7 +173,7 @@ export function WorkspacePage() {
   const total = state.data?.count ?? 0;
   const shown = state.data?.value.length ?? 0;
   const hasNext = (page + 1) * PAGE_SIZE < total;
-  const activeFilters = [stage, department, vendor, sync].filter(Boolean).length;
+  const activeFilters = [status, company, vendor, category].filter(Boolean).length;
 
   return (
     <div className="page">
@@ -167,7 +183,7 @@ export function WorkspacePage() {
           <h1>Requisitions</h1>
           <p className="page__sub">
             {state.data
-              ? `${total} requisition${total === 1 ? '' : 's'} matching your filters`
+              ? `${total} of ${state.data.total} requisitions read from Dynamics 365`
               : 'Loading requisitions…'}
           </p>
         </div>
@@ -188,19 +204,19 @@ export function WorkspacePage() {
               setSearchInput(e.target.value);
               setParam('search', e.target.value.trim());
             }}
-            placeholder="Search number, name, vendor, requester…"
+            placeholder="Search number, name, vendor, category…"
             aria-label="Search requisitions"
           />
         </div>
 
         <select
           className="select"
-          value={stage}
-          onChange={(e) => setParam('stage', e.target.value)}
-          aria-label="Filter by approval stage"
+          value={status}
+          onChange={(e) => setParam('status', e.target.value)}
+          aria-label="Filter by status"
         >
-          <option value="">All stages</option>
-          {facets?.stages.map((s) => (
+          <option value="">All statuses</option>
+          {facets?.statuses.map((s) => (
             <option key={s} value={s}>
               {s}
             </option>
@@ -209,14 +225,14 @@ export function WorkspacePage() {
 
         <select
           className="select"
-          value={department}
-          onChange={(e) => setParam('department', e.target.value)}
-          aria-label="Filter by department"
+          value={category}
+          onChange={(e) => setParam('category', e.target.value)}
+          aria-label="Filter by category"
         >
-          <option value="">All departments</option>
-          {facets?.departments.map((d) => (
-            <option key={d} value={d}>
-              {d}
+          <option value="">All categories</option>
+          {facets?.categories.map((c) => (
+            <option key={c} value={c}>
+              {c}
             </option>
           ))}
         </select>
@@ -235,18 +251,21 @@ export function WorkspacePage() {
           ))}
         </select>
 
-        <select
-          className="select"
-          value={sync}
-          onChange={(e) => setParam('sync', e.target.value)}
-          aria-label="Filter by D365 sync state"
-        >
-          <option value="">Any sync state</option>
-          <option value="synced">Synced to D365</option>
-          <option value="pending">Sync pending</option>
-          <option value="error">Sync failed</option>
-          <option value="local">Not yet sent</option>
-        </select>
+        {(facets?.companies.length ?? 0) > 1 && (
+          <select
+            className="select"
+            value={company}
+            onChange={(e) => setParam('company', e.target.value)}
+            aria-label="Filter by legal entity"
+          >
+            <option value="">All legal entities</option>
+            {facets?.companies.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        )}
 
         {activeFilters > 0 && (
           <button
@@ -266,8 +285,18 @@ export function WorkspacePage() {
 
       {state.error ? <ErrorBanner error={state.error} onRetry={state.reload} /> : null}
 
+      {state.data?.lineError && (
+        <div className="banner banner--warning" style={{ marginBottom: '1rem' }}>
+          <IconAlert size={17} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div>
+            <div className="banner__title">Amounts unavailable</div>
+            <p>Requisition lines could not be read, so no totals are shown.</p>
+          </div>
+        </div>
+      )}
+
       {state.loading ? (
-        <div className="card card--flush" style={{ padding: '1rem' }}>
+        <div className="card" style={{ padding: '1rem' }}>
           <Skeleton variant="row" count={8} />
         </div>
       ) : (
@@ -278,7 +307,7 @@ export function WorkspacePage() {
               rows={state.data.value}
               rowKey={(r) => r.requisitionNumber}
               onRowActivate={open}
-              defaultSort="totalAmount"
+              defaultSort="requisitionNumber"
               emptyTitle="No requisitions match"
               emptyHint="Try clearing a filter or widening your search."
             />

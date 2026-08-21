@@ -22,23 +22,20 @@ import {
  * point of an integration demonstration, so the state is always visible.
  */
 function ConnectionIndicator() {
-  const { source, liveCount, demoCount } = useApp();
-
-  const [state, label] =
-    source === 'd365'
-      ? (['live', `Live · ${liveCount} from D365`] as const)
-      : source === 'blended'
-        ? (['live', `Live · ${liveCount} D365 + ${demoCount} sample`] as const)
-        : (['demo', `Sample data · ${demoCount} records`] as const);
+  const { requisitionCount } = useApp();
 
   return (
-    <div className="conn" title={`Data source: ${source}`}>
-      <span className={`conn__dot conn__dot--${state}`} />
+    <div className="conn" title="All data is read live from Dynamics 365">
+      <span className="conn__dot conn__dot--live" />
       <span style={{ minWidth: 0 }}>
         <span style={{ display: 'block', fontWeight: 600, color: 'var(--text)' }}>
           Dynamics 365 FSC
         </span>
-        <span className="tiny dim">{label}</span>
+        <span className="tiny dim">
+          {requisitionCount === null
+            ? 'Connecting…'
+            : `${requisitionCount} requisition${requisitionCount === 1 ? '' : 's'} live`}
+        </span>
       </span>
     </div>
   );
@@ -47,13 +44,11 @@ function ConnectionIndicator() {
 const NAV = [
   { to: '/', label: 'Command Center', icon: IconDashboard, end: true },
   { to: '/requisitions', label: 'Requisitions', icon: IconList },
-  { to: '/approvals', label: 'Approvals', icon: IconCheckCircle, badgeKey: 'approvals' },
   { to: '/analytics', label: 'Spend Analytics', icon: IconChart },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
-  const { approvalCount } = useApp();
   const { openPanel } = useCopilot();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -103,9 +98,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <item.icon size={17} />
               {item.label}
-              {item.badgeKey === 'approvals' && approvalCount > 0 && (
-                <span className="navlink__badge">{approvalCount}</span>
-              )}
             </NavLink>
           ))}
 

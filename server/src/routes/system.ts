@@ -44,7 +44,6 @@ export default async function systemRoutes(app: FastifyInstance) {
     headerEntitySet: headerEntity.entitySet,
     lineEntitySet: lineEntity.entitySet,
     authEnabled,
-    demoMode: config.DEMO_MODE,
     signedIn: readUser(request) !== null,
   }));
 

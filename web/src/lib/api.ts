@@ -2,10 +2,8 @@ import type {
   AnalyticsResponse,
   AppConfig,
   AppUser,
-  ApprovalsResponse,
   AssistantIntent,
   AssistantReply,
-  ActivityEvent,
   D365Health,
   PropertyInfo,
   Record365,
@@ -97,13 +95,9 @@ export const api = {
   requisitions: (params: {
     search?: string;
     status?: string;
-    stage?: string;
-    department?: string;
+    company?: string;
     vendor?: string;
-    sync?: string;
-    priority?: string;
-    sort?: string;
-    direction?: 'asc' | 'desc';
+    category?: string;
     top?: number;
     skip?: number;
   }) => call<WorkspaceListResponse>(`/workspace/requisitions${qs(params)}`),
@@ -114,8 +108,6 @@ export const api = {
     ),
 
   analytics: () => call<AnalyticsResponse>('/workspace/analytics'),
-  activity: () => call<{ value: ActivityEvent[] }>('/workspace/activity'),
-  approvals: () => call<ApprovalsResponse>('/workspace/approvals'),
 
   /* --- assistant --- */
   ask: (body: {

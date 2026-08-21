@@ -5,7 +5,6 @@ import { EmptyState } from './components/primitives';
 import { AppProvider } from './lib/AppContext';
 import { CopilotProvider, useCopilot } from './lib/CopilotContext';
 import { AnalyticsPage } from './pages/AnalyticsPage';
-import { ApprovalsPage } from './pages/ApprovalsPage';
 import { CommandCenterPage } from './pages/CommandCenterPage';
 import { CreateRequisitionPage } from './pages/CreateRequisitionPage';
 import { DiagnosticsPage } from './pages/DiagnosticsPage';
@@ -22,7 +21,6 @@ export default function App() {
             <Route path="/requisitions" element={<WorkspacePage />} />
             <Route path="/requisitions/new" element={<CreateRequisitionPage />} />
             <Route path="/requisitions/:company/:requisitionNumber" element={<RequisitionDetailPage />} />
-            <Route path="/approvals" element={<ApprovalsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/diagnostics" element={<DiagnosticsPage />} />
             <Route path="*" element={<NotFound />} />

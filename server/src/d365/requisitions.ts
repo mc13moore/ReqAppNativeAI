@@ -129,6 +129,24 @@ export async function listLines(
   });
 }
 
+/**
+ * Reads requisition lines in bulk, across requisitions.
+ *
+ * The header entity carries no total, so any spend figure has to come from the
+ * lines. Fetching them one requisition at a time would mean one round trip per
+ * row on every dashboard load; a single unfiltered read grouped in memory is
+ * far cheaper and returns exactly the same records.
+ */
+export async function listAllLines(top = 2000): Promise<ODataCollection<Record365>> {
+  return list<Record365>(lineEntity.entitySet, {
+    select: listFields(lineEntity),
+    orderby: `${LINE_PARENT_FIELD} desc, ${LINE_NUMBER_FIELD} asc`,
+    top,
+    count: true,
+    crossCompany: hasCompanyField(lineEntity),
+  });
+}
+
 export class ValidationError extends Error {
   constructor(readonly errors: string[]) {
     super(errors.join(' '));

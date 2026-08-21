@@ -2,45 +2,36 @@ import { createContext, useContext, type ReactNode } from 'react';
 import { api } from './api';
 import { useAsync } from './hooks';
 import { ErrorBanner, Skeleton } from '../components/primitives';
-import type { AppConfig, DataSource, Schema } from './types';
+import type { AppConfig, Schema } from './types';
 
 interface AppContextValue {
   config: AppConfig;
   schema: Schema;
-  /** Where the requisition population is coming from right now. */
-  source: DataSource;
-  liveCount: number;
-  demoCount: number;
-  approvalCount: number;
+  /** Requisitions currently readable from D365, or null if the count failed. */
+  requisitionCount: number | null;
   reload: () => void;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
 /**
- * Loads the field schema, environment configuration and a headline count of
- * pending approvals before anything renders.
+ * Loads the field schema, environment configuration and a headline requisition
+ * count before anything renders.
  *
- * Every table and form is generated from the schema, and the shell's data
- * source indicator depends on knowing where records came from, so there is no
- * useful interface to show until this has arrived.
+ * Every table and form is generated from the schema, so there is no useful
+ * interface to show until it has arrived.
  */
 export function AppProvider({ children }: { children: ReactNode }) {
   const state = useAsync(async () => {
-    const [config, schema, approvals, sample] = await Promise.all([
+    const [config, schema, sample] = await Promise.all([
       api.config(),
       api.schema(),
-      // Neither of these should block the shell from rendering: a failure just
-      // means the badge and the source indicator show less, not that the
-      // application refuses to start.
-      api.approvals().catch(() => ({ value: [], count: 0, totalValue: 0, source: 'demo' as const })),
-      // One row is enough: the response carries the source breakdown in its
-      // envelope, so this avoids pulling the whole population twice.
-      api
-        .requisitions({ top: 1 })
-        .catch(() => ({ source: 'demo' as const, liveCount: 0, demoCount: 0 })),
+      // One row is enough: the response envelope carries the total, so this
+      // avoids pulling the whole population twice. A failure here must not
+      // block the shell from rendering -- the indicator just shows less.
+      api.requisitions({ top: 1 }).catch(() => null),
     ]);
-    return { config, schema, approvals, sample };
+    return { config, schema, sample };
   }, []);
 
   if (state.loading) {
@@ -68,17 +59,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }
 
-  const { config, schema, approvals, sample } = state.data;
+  const { config, schema, sample } = state.data;
 
   return (
     <AppContext.Provider
       value={{
         config,
         schema,
-        source: sample.source,
-        liveCount: sample.liveCount,
-        demoCount: sample.demoCount,
-        approvalCount: approvals.count,
+        requisitionCount: sample ? sample.total : null,
         reload: state.reload,
       }}
     >

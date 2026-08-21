@@ -39,9 +39,7 @@ export function DiagnosticsPage() {
             environment.
           </p>
         </div>
-        <Badge tone={config.demoMode === 'on' ? 'warning' : 'info'}>
-          Demo mode: {config.demoMode}
-        </Badge>
+        <Badge tone="info">{config.headerEntitySet}</Badge>
       </div>
 
       <div className="grid grid--2">

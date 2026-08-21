@@ -12,11 +12,9 @@ interface Turn {
 
 const QUICK_PROMPTS: { intent: AssistantIntent; label: string; needsRecord: boolean }[] = [
   { intent: 'summarize', label: 'Summarize this requisition', needsRecord: true },
-  { intent: 'why-waiting', label: 'Why is this waiting for approval?', needsRecord: true },
-  { intent: 'similar', label: 'Find similar historical requisitions', needsRecord: true },
-  { intent: 'suggest-vendor', label: 'Suggest a vendor', needsRecord: true },
-  { intent: 'unusual-spend', label: 'Identify unusual spend', needsRecord: false },
-  { intent: 'approval-summary', label: 'Generate an approval summary', needsRecord: true },
+  { intent: 'similar', label: 'Find similar requisitions', needsRecord: true },
+  { intent: 'spend-profile', label: 'Show the spend profile', needsRecord: false },
+  { intent: 'outliers', label: 'Highlight unusual spend', needsRecord: false },
 ];
 
 export interface CopilotContext {
@@ -135,12 +133,12 @@ export function CopilotPanel({
               <div className="bubble bubble--ai">
                 <div className="bubble__headline">How can I help with procurement?</div>
                 <p>
-                  I can read requisitions, approval history and spend patterns. Pick a starting
-                  point or ask anything.
+                  I can read requisition headers, lines and spend patterns from Dynamics 365.
+                  Pick a starting point or ask anything.
                 </p>
                 <div className="bubble__grounded">
-                  Preview — responses are generated from live application data, not a language
-                  model.
+                  Preview — answers are composed from the Dynamics 365 records on screen, not
+                  from a language model.
                 </div>
               </div>
 
@@ -232,7 +230,7 @@ export function CopilotPanel({
               className="field__input"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about requisitions, spend or approvals…"
+              placeholder="Ask about requisitions or spend…"
               disabled={busy}
               aria-label="Ask the assistant"
             />

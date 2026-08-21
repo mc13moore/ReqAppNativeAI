@@ -1,6 +1,6 @@
-import { ColumnChart, DonutChart, HorizontalBars, StageFunnel } from '../components/Charts';
-import { IconAlert, IconClock, IconTrendUp } from '../components/Icons';
-import { Badge, ErrorBanner, Skeleton } from '../components/primitives';
+import { ColumnChart, DonutChart, HorizontalBars } from '../components/Charts';
+import { IconAlert, IconTrendUp } from '../components/Icons';
+import { Badge, EmptyState, ErrorBanner, Skeleton } from '../components/primitives';
 import { api } from '../lib/api';
 import { money, moneyShort } from '../lib/format';
 import { useAsync } from '../lib/hooks';
@@ -27,14 +27,11 @@ export function AnalyticsPage() {
     );
   }
 
-  const { analytics: a } = state.data;
+  const { analytics: a, headerCount, lineCount } = state.data;
   const currency = a.totals.currency;
   const fmt = (n: number) => moneyShort(n, currency);
 
-  const avgPerReq =
-    a.byDepartment.reduce((s, d) => s + (d.count ?? 0), 0) > 0
-      ? a.totals.totalRequestedSpend / a.byDepartment.reduce((s, d) => s + (d.count ?? 0), 0)
-      : 0;
+  const hasSpendData = a.totals.totalRequestedSpend > 0;
 
   return (
     <div className="page">
@@ -43,117 +40,117 @@ export function AnalyticsPage() {
           <div className="page__eyebrow">Insight</div>
           <h1>Spend analytics</h1>
           <p className="page__sub">
-            Requested spend across vendors, categories, departments and time.
+            Aggregated from {headerCount} requisition{headerCount === 1 ? '' : 's'} and {lineCount}{' '}
+            line{lineCount === 1 ? '' : 's'} read from Dynamics 365.
           </p>
         </div>
-        <div className="row">
-          <Badge tone="info">{money(avgPerReq, currency)} average requisition</Badge>
-        </div>
+        {hasSpendData && (
+          <Badge tone="info">{money(a.totals.averageValue, currency)} average requisition</Badge>
+        )}
       </div>
 
-      <div className="card" style={{ marginBottom: '1rem' }}>
-        <div className="card__head">
-          <h2 className="card__title">Spend over time</h2>
-          <span className="card__hint">Requested value by month created</span>
-        </div>
-        <ColumnChart data={a.byMonth} format={fmt} height={230} />
-      </div>
-
-      <div className="grid grid--2">
+      {!hasSpendData ? (
         <div className="card">
-          <div className="card__head">
-            <h2 className="card__title">Spend by vendor</h2>
-            <span className="card__hint">Top {Math.min(8, a.byVendor.length)}</span>
-          </div>
-          <HorizontalBars data={a.byVendor} format={fmt} />
-        </div>
-
-        <div className="card">
-          <div className="card__head">
-            <h2 className="card__title">Spend by department</h2>
-          </div>
-          <HorizontalBars data={a.byDepartment} format={fmt} />
-        </div>
-
-        <div className="card">
-          <div className="card__head">
-            <h2 className="card__title">Spend by category</h2>
-          </div>
-          <DonutChart
-            data={a.byCategory}
-            format={fmt}
-            centerValue={fmt(a.totals.totalRequestedSpend)}
-            centerLabel="total"
+          <EmptyState
+            title="No spend data available"
+            hint="Requisition lines carry the amounts. None were returned for this environment, so there is nothing to aggregate."
           />
         </div>
-
-        <div className="card">
-          <div className="card__head">
-            <h2 className="card__title">Approval pipeline</h2>
-            <span className="card__hint">Volume and value held at each stage</span>
-          </div>
-          <StageFunnel data={a.byStage} format={fmt} />
-        </div>
-      </div>
-
-      <div className="grid grid--2" style={{ marginTop: '1rem' }}>
-        <div className="card">
-          <div className="card__head">
-            <h2 className="card__title">
-              <IconClock size={15} />
-              Approval bottlenecks
-            </h2>
-          </div>
-          {a.bottlenecks.length === 0 ? (
-            <p className="small dim">No stage is holding work materially longer than the others.</p>
-          ) : (
-            <div className="stack stack--sm">
-              {a.bottlenecks.map((b) => (
-                <div className="callout callout--warning" key={b.stage}>
-                  <IconClock size={15} style={{ flexShrink: 0, marginTop: 2 }} />
-                  <div style={{ flex: 1 }}>
-                    <strong>{b.stage}</strong>
-                    <div className="tiny" style={{ marginTop: '0.1rem' }}>
-                      {b.count} requisition{b.count === 1 ? '' : 's'} waiting an average of{' '}
-                      {b.averageAgeDays} days
-                    </div>
-                  </div>
-                </div>
-              ))}
+      ) : (
+        <>
+          {a.byMonth.length > 1 && (
+            <div className="card" style={{ marginBottom: '1rem' }}>
+              <div className="card__head">
+                <h2 className="card__title">Spend over time</h2>
+                <span className="card__hint">By requested date on the requisition</span>
+              </div>
+              <ColumnChart data={a.byMonth} format={fmt} height={230} />
             </div>
           )}
-        </div>
 
-        <div className="card">
-          <div className="card__head">
-            <h2 className="card__title">
-              <IconTrendUp size={15} />
-              Spend anomalies
-            </h2>
-            <span className="card__hint">Against the median for each category</span>
+          <div className="grid grid--2">
+            {a.byVendor.length > 0 && (
+              <div className="card">
+                <div className="card__head">
+                  <h2 className="card__title">Spend by vendor</h2>
+                  <span className="card__hint">Vendor account number on lines</span>
+                </div>
+                <HorizontalBars data={a.byVendor} format={fmt} />
+              </div>
+            )}
+
+            {a.byCategory.length > 0 && (
+              <div className="card">
+                <div className="card__head">
+                  <h2 className="card__title">Spend by category</h2>
+                  <span className="card__hint">Procurement category on lines</span>
+                </div>
+                <HorizontalBars data={a.byCategory} format={fmt} />
+              </div>
+            )}
+
+            {a.byStatus.length > 0 && (
+              <div className="card">
+                <div className="card__head">
+                  <h2 className="card__title">Value by status</h2>
+                </div>
+                <DonutChart
+                  data={a.byStatus}
+                  format={fmt}
+                  centerValue={fmt(a.totals.totalRequestedSpend)}
+                  centerLabel="total"
+                />
+              </div>
+            )}
+
+            {a.byPreparer.length > 0 && (
+              <div className="card">
+                <div className="card__head">
+                  <h2 className="card__title">Spend by preparer</h2>
+                  <span className="card__hint">Personnel number on the requisition header</span>
+                </div>
+                <HorizontalBars data={a.byPreparer} format={fmt} />
+              </div>
+            )}
           </div>
-          {a.anomalies.length === 0 ? (
-            <p className="small dim">Nothing sits far outside its category norm.</p>
-          ) : (
-            <div className="stack stack--sm">
-              {a.anomalies.map((anomaly) => (
-                <div className="callout callout--danger" key={anomaly.requisitionNumber}>
-                  <IconAlert size={15} style={{ flexShrink: 0, marginTop: 2 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="row row--between">
-                      <strong className="mono">{anomaly.requisitionNumber}</strong>
-                      <strong className="numeric">{money(anomaly.amount, currency)}</strong>
-                    </div>
-                    <div className="tiny" style={{ marginTop: '0.1rem' }}>
-                      {anomaly.reason} · {anomaly.vendor} · {anomaly.department}
+
+          <div className="card" style={{ marginTop: '1rem' }}>
+            <div className="card__head">
+              <h2 className="card__title">
+                <IconTrendUp size={15} />
+                Above category median
+              </h2>
+              <span className="card__hint">
+                Requisitions more than 2.5× their category median
+              </span>
+            </div>
+
+            {a.outliers.length === 0 ? (
+              <p className="small dim">
+                Nothing exceeds its category median by a wide margin, or no category yet holds the
+                six requisitions needed for the comparison to mean anything.
+              </p>
+            ) : (
+              <div className="stack stack--sm">
+                {a.outliers.map((o) => (
+                  <div className="callout callout--warning" key={o.requisitionNumber}>
+                    <IconAlert size={15} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="row row--between">
+                        <strong className="mono">{o.requisitionNumber}</strong>
+                        <strong className="numeric">{money(o.amount, currency)}</strong>
+                      </div>
+                      <div className="tiny" style={{ marginTop: '0.1rem' }}>
+                        {o.multiple}× the {o.category} median of {money(o.medianAmount, currency)}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

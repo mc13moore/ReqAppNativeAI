@@ -116,18 +116,6 @@ const schema = z.object({
    */
   WEB_DIST: z.string().default('../../web/dist'),
 
-  /**
-   * Controls the demonstration data layer.
-   *
-   * 'auto' - use D365 when it answers and top up with generated records so the
-   *          dashboards stay legible; degrade to generated data on failure.
-   * 'on'   - generated data only; D365 is not called.
-   * 'off'  - live data only; screens are empty when D365 returns nothing.
-   *
-   * Every response reports which sources contributed and generated records are
-   * badged in the interface, so demo data is never mistaken for live data.
-   */
-  DEMO_MODE: z.enum(['auto', 'on', 'off']).default('auto'),
 });
 
 export type Config = z.infer<typeof schema>;

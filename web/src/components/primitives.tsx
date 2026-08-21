@@ -8,7 +8,12 @@ import { IconAlert, IconArrowDown, IconArrowUp, IconInbox } from './Icons';
 
 export type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'purple' | 'teal';
 
-/** Maps a D365 requisition status onto a badge tone. */
+/**
+ * Maps the D365 RequisitionStatus value onto a badge tone.
+ *
+ * Matched loosely because the status vocabulary differs between F&O versions;
+ * an unrecognised value falls through to neutral rather than being guessed at.
+ */
 export function statusTone(status: string): Tone {
   const value = status.toLowerCase();
   if (value.includes('approv') && !value.includes('pend')) return 'success';
@@ -18,39 +23,6 @@ export function statusTone(status: string): Tone {
   if (value.includes('closed')) return 'info';
   return 'neutral';
 }
-
-export function priorityTone(priority: string): Tone {
-  switch (priority) {
-    case 'Critical':
-      return 'danger';
-    case 'High':
-      return 'warning';
-    case 'Normal':
-      return 'info';
-    default:
-      return 'neutral';
-  }
-}
-
-export function syncTone(state: string): Tone {
-  switch (state) {
-    case 'synced':
-      return 'success';
-    case 'pending':
-      return 'warning';
-    case 'error':
-      return 'danger';
-    default:
-      return 'neutral';
-  }
-}
-
-export const SYNC_LABEL: Record<string, string> = {
-  synced: 'Synced to D365',
-  pending: 'Sync pending',
-  error: 'Sync failed',
-  local: 'Not yet sent',
-};
 
 export function Badge({
   tone = 'neutral',

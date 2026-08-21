@@ -42,7 +42,6 @@ export interface AppConfig {
   headerEntitySet: string;
   lineEntitySet: string;
   authEnabled: boolean;
-  demoMode: 'auto' | 'on' | 'off';
   signedIn: boolean;
 }
 
@@ -55,10 +54,9 @@ export interface AppUser {
 
 /* ---------------------------------------------------------------------------
    Workspace projections
+   Every field maps to a Dynamics 365 requisition header or line. Nothing is
+   generated: where D365 has no value, the interface shows none.
    --------------------------------------------------------------------------- */
-
-export type SyncState = 'synced' | 'pending' | 'error' | 'local';
-export type DataSource = 'd365' | 'demo' | 'blended';
 
 export interface RequisitionSummary {
   requisitionNumber: string;
@@ -66,27 +64,19 @@ export interface RequisitionSummary {
   status: string;
   purpose: string;
   company: string;
-  department: string;
-  requester: {
-    name: string;
-    initials: string;
-    title: string;
-    personnelNumber: string;
-  };
-  vendor: string;
-  category: string;
+  preparerPersonnelNumber: string;
+  requestedDate: string;
+  accountingDate: string;
+  onHold: boolean;
+  onHoldExplanation: string;
+  projectId: string;
+  justificationCode: string;
   totalAmount: number;
   currency: string;
   lineCount: number;
-  requestedDate: string;
-  createdDate: string;
-  ageDays: number;
-  priority: string;
-  approvalStage: string;
-  d365Stage: string;
-  syncState: SyncState;
-  syncMessage?: string;
-  live: boolean;
+  vendors: string[];
+  categories: string[];
+  hasLineData: boolean;
 }
 
 export interface RequisitionLineView {
@@ -101,40 +91,22 @@ export interface RequisitionLineView {
   lineAmount: number;
   currency: string;
   requestedDate: string;
+  accountingDate: string;
   vendor: string;
   warehouse: string;
   site: string;
   requisitioner: string;
-}
-
-export interface TimelineEvent {
-  stage: string;
-  state: 'complete' | 'current' | 'pending' | 'blocked';
-  actor?: string;
-  timestamp?: string;
-  note?: string;
+  projectId: string;
+  justificationCode: string;
+  justificationDetails: string;
+  deliveryAddress: string;
 }
 
 export interface RequisitionDetailView {
   summary: RequisitionSummary;
   lines: RequisitionLineView[];
-  approvalTimeline: TimelineEvent[];
-  d365Timeline: TimelineEvent[];
-  financialDimensions: { label: string; value: string }[];
-  attachments: { name: string; sizeKb: number; uploadedBy: string; uploadedOn: string }[];
+  attributes: { label: string; value: string }[];
   raw?: Record365;
-  source: DataSource;
-  liveError?: string;
-}
-
-export interface ActivityEvent {
-  id: string;
-  requisitionNumber: string;
-  kind: 'created' | 'submitted' | 'approved' | 'rejected' | 'synced' | 'sync-failed' | 'comment';
-  actor: string;
-  initials: string;
-  message: string;
-  timestamp: string;
 }
 
 export interface AnalyticsBucket {
@@ -145,28 +117,27 @@ export interface AnalyticsBucket {
 
 export interface Analytics {
   totals: {
+    requisitions: number;
     openRequisitions: number;
-    pendingApproval: number;
+    onHold: number;
     totalRequestedSpend: number;
-    averageApprovalDays: number;
-    syncedCount: number;
-    pendingSyncCount: number;
-    errorSyncCount: number;
+    averageValue: number;
+    lineCount: number;
     currency: string;
+    withoutLineData: number;
   };
   byStatus: AnalyticsBucket[];
-  byStage: AnalyticsBucket[];
-  byDepartment: AnalyticsBucket[];
-  byVendor: AnalyticsBucket[];
   byCategory: AnalyticsBucket[];
+  byVendor: AnalyticsBucket[];
+  byLegalEntity: AnalyticsBucket[];
+  byPreparer: AnalyticsBucket[];
   byMonth: AnalyticsBucket[];
-  bottlenecks: { stage: string; count: number; averageAgeDays: number }[];
-  anomalies: {
+  outliers: {
     requisitionNumber: string;
-    department: string;
-    vendor: string;
+    category: string;
     amount: number;
-    reason: string;
+    medianAmount: number;
+    multiple: number;
   }[];
 }
 
@@ -174,31 +145,22 @@ export interface WorkspaceListResponse {
   value: RequisitionSummary[];
   count: number;
   total: number;
-  source: DataSource;
-  liveCount: number;
-  demoCount: number;
-  liveError?: string;
+  headerCount: number;
+  lineCount: number;
+  lineError?: string;
   facets: {
-    departments: string[];
-    vendors: string[];
     statuses: string[];
-    stages: string[];
+    companies: string[];
+    vendors: string[];
+    categories: string[];
   };
 }
 
 export interface AnalyticsResponse {
   analytics: Analytics;
-  source: DataSource;
-  liveCount: number;
-  demoCount: number;
-  liveError?: string;
-}
-
-export interface ApprovalsResponse {
-  value: RequisitionSummary[];
-  count: number;
-  totalValue: number;
-  source: DataSource;
+  headerCount: number;
+  lineCount: number;
+  lineError?: string;
 }
 
 /* ---------------------------------------------------------------------------
@@ -207,11 +169,9 @@ export interface ApprovalsResponse {
 
 export type AssistantIntent =
   | 'summarize'
-  | 'why-waiting'
   | 'similar'
-  | 'suggest-vendor'
-  | 'unusual-spend'
-  | 'approval-summary'
+  | 'spend-profile'
+  | 'outliers'
   | 'freeform';
 
 export interface AssistantReply {
