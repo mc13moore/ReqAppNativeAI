@@ -88,7 +88,8 @@ export const api = {
   me: () => call<{ user: AppUser }>('/me'),
   schema: () => call<Schema>('/schema'),
   checkD365: () => call<D365Health>('/health/d365'),
-  lookups: () => call<Record<string, LookupResult>>('/lookups'),
+  lookups: (refresh = false) =>
+    call<Record<string, LookupResult>>(`/lookups${refresh ? '?refresh=true' : ''}`),
 
   /* --- workspace (read projections) --- */
   requisitions: (params: {

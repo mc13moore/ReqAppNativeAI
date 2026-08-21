@@ -143,7 +143,7 @@ const text = (value: unknown): string =>
  * The field names are read off the row instead.
  */
 async function probe(entity: string): Promise<
-  | { ok: true; fields: string[] }
+  | { ok: true; fields: string[]; companyScoped: boolean }
   | { ok: false; attempt: LookupAttempt }
 > {
   try {
@@ -155,7 +155,12 @@ async function probe(entity: string): Promise<
     }
 
     const fields = Object.keys(row).filter((key) => !key.startsWith('@'));
-    return { ok: true, fields };
+
+    // Most F&O master data is scoped by legal entity. Reading it without
+    // cross-company returns only the service account's default company, which
+    // is why a vendor list can come back with a single row while the vendor
+    // master holds hundreds.
+    return { ok: true, fields, companyScoped: fields.includes('dataAreaId') };
   } catch (err) {
     const status = err instanceof D365Error ? err.status : undefined;
     return {
@@ -173,6 +178,7 @@ async function fetchOptions(
   entity: string,
   valueField: string,
   labelField: string | undefined,
+  crossCompany: boolean,
 ): Promise<LookupOption[]> {
   const select = labelField && labelField !== valueField ? [valueField, labelField] : [valueField];
 
@@ -180,6 +186,7 @@ async function fetchOptions(
     select,
     orderby: valueField,
     top: MAX_OPTIONS,
+    crossCompany,
   });
 
   const seen = new Set<string>();
@@ -256,14 +263,34 @@ export async function loadLookup(kind: string, refresh = false): Promise<LookupR
     );
 
     try {
-      const options = await fetchOptions(entity, valueField, labelField);
+      let options: LookupOption[];
+      try {
+        options = await fetchOptions(entity, valueField, labelField, probed.companyScoped);
+      } catch (err) {
+        // Not every company-scoped entity accepts cross-company. Retrying
+        // without it returns the default company's rows, which is still far
+        // better than dropping the dropdown entirely.
+        if (!probed.companyScoped) throw err;
+        attempts.push({
+          entity,
+          outcome: 'rejected',
+          detail: `cross-company rejected, retrying scoped: ${
+            err instanceof Error ? err.message.slice(0, 200) : String(err)
+          }`,
+        });
+        options = await fetchOptions(entity, valueField, labelField, false);
+      }
 
       if (options.length === 0) {
         attempts.push({ entity, outcome: 'empty', detail: 'Query returned no usable values.' });
         continue;
       }
 
-      attempts.push({ entity, outcome: 'ok', detail: `${options.length} options` });
+      attempts.push({
+        entity,
+        outcome: 'ok',
+        detail: `${options.length} options${probed.companyScoped ? ' across all legal entities' : ''}`,
+      });
       result = {
         kind,
         options,

@@ -21,7 +21,9 @@ export function DiagnosticsPage() {
   const [selected, setSelected] = useState<string | null>(config.headerEntitySet);
 
   const connection = useAsync(() => api.checkD365(), []);
-  const lookups = useAsync(() => api.lookups(), []);
+  // Forced refresh: the server caches lookups for fifteen minutes, and a
+  // re-check that returned the cached answer would be useless here.
+  const lookups = useAsync(() => api.lookups(true), []);
   const entities = useAsync(() => api.searchEntities(search), [search]);
   const described = useAsync(
     () => (selected ? api.describeEntity(selected) : Promise.resolve(null)),
