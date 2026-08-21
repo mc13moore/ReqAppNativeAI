@@ -54,18 +54,16 @@ export interface EntityDef {
   fields: FieldDef[];
 }
 
+/**
+ * Confirmed against armanino-train by reading an actual record from
+ * /data/PurchaseRequisitionHeaders. Note the absence of dataAreaId: this entity
+ * does not expose it, so it is neither a key nor filterable, and selecting it
+ * returns HTTP 400.
+ */
 export const headerEntity: EntityDef = {
   entitySet: config.D365_HEADER_ENTITY,
   label: 'Requisition',
   fields: [
-    {
-      name: 'dataAreaId',
-      label: 'Company',
-      type: 'string',
-      key: true,
-      readOnly: true,
-      inList: true,
-    },
     {
       name: 'RequisitionNumber',
       label: 'Requisition number',
@@ -98,43 +96,73 @@ export const headerEntity: EntityDef = {
       inList: true,
     },
     {
-      name: 'RequesterPersonnelNumber',
-      label: 'Requester personnel number',
-      type: 'string',
-      required: true,
-      inList: true,
-      hint: 'Worker ID of the person the requisition is raised for.',
-    },
-    {
       name: 'PreparerPersonnelNumber',
       label: 'Preparer personnel number',
       type: 'string',
-      hint: 'Defaults to the requester when omitted.',
+      inList: true,
+      hint: 'Worker ID of the person preparing the requisition.',
     },
     {
-      name: 'RequestingLegalEntityId',
-      label: 'Requesting legal entity',
+      name: 'ProjectBuyingLegalEntityId',
+      label: 'Buying legal entity',
+      type: 'string',
+      inList: true,
+    },
+    {
+      name: 'DefaultAccountingDate',
+      label: 'Accounting date',
+      type: 'date',
+    },
+    {
+      name: 'DefaultRequestedDate',
+      label: 'Requested date',
+      type: 'date',
+    },
+    {
+      name: 'DefaultBusinessJustificationCode',
+      label: 'Business justification code',
       type: 'string',
     },
     {
-      name: 'AccountingDate',
-      label: 'Accounting date',
-      type: 'date',
+      name: 'DefaultBusinessJustificationDetails',
+      label: 'Business justification',
+      type: 'string',
+    },
+    {
+      name: 'IsPurchaseRequisitionOnHold',
+      label: 'On hold',
+      type: 'enum',
+      options: ['Yes', 'No'],
+      readOnly: true,
+    },
+    {
+      name: 'OnHoldExplanation',
+      label: 'On-hold explanation',
+      type: 'string',
+      readOnly: true,
+    },
+    {
+      name: 'DefaultProjectId',
+      label: 'Project',
+      type: 'string',
     },
   ],
 };
 
+/**
+ * Confirmed against armanino-train by reading a complete live record. Like the
+ * header, this entity has no dataAreaId.
+ *
+ * The entity exposes around eighty properties, most of them delivery-address
+ * and project-accounting detail. Only the ones a requisition actually turns on
+ * are declared here -- listing everything would produce a create form nobody
+ * could fill in. Add more from the live record as they are needed; the tables
+ * and forms follow automatically.
+ */
 export const lineEntity: EntityDef = {
   entitySet: config.D365_LINE_ENTITY,
   label: 'Requisition line',
   fields: [
-    {
-      name: 'dataAreaId',
-      label: 'Company',
-      type: 'string',
-      key: true,
-      readOnly: true,
-    },
     {
       name: 'RequisitionNumber',
       label: 'Requisition number',
@@ -143,12 +171,19 @@ export const lineEntity: EntityDef = {
       readOnly: true,
     },
     {
-      name: 'LineNumber',
+      name: 'RequisitionLineNumber',
       label: 'Line',
       type: 'number',
       key: true,
       inList: true,
       hint: 'Leave blank to append to the end of the requisition.',
+    },
+    {
+      name: 'LineType',
+      label: 'Line type',
+      type: 'enum',
+      options: ['Item', 'Category'],
+      hint: 'Item lines need an item number; category lines need a procurement category.',
     },
     {
       name: 'ItemNumber',
@@ -158,7 +193,7 @@ export const lineEntity: EntityDef = {
       hint: 'Supply either an item number or a procurement category.',
     },
     {
-      name: 'ProcurementCategoryName',
+      name: 'ProcurementProductCategoryName',
       label: 'Procurement category',
       type: 'string',
       inList: true,
@@ -171,20 +206,51 @@ export const lineEntity: EntityDef = {
       inList: true,
     },
     {
-      name: 'RequestedQuantity',
+      name: 'RequestedPurchaseQuantity',
       label: 'Quantity',
       type: 'number',
       required: true,
       inList: true,
     },
-    { name: 'UnitSymbol', label: 'Unit', type: 'string', inList: true },
-    { name: 'UnitPrice', label: 'Unit price', type: 'number', inList: true },
+    { name: 'PurchaseUnitSymbol', label: 'Unit', type: 'string', inList: true },
     {
-      name: 'RequestedDeliveryDate',
+      name: 'PurchasePrice',
+      label: 'Unit price',
+      type: 'number',
+      inList: true,
+    },
+    {
+      name: 'LineAmount',
+      label: 'Line amount',
+      type: 'number',
+      // Calculated by F&O from price, quantity and discounts.
+      readOnly: true,
+      inList: true,
+    },
+    { name: 'CurrencyCode', label: 'Currency', type: 'string' },
+    {
+      name: 'RequestedDate',
       label: 'Requested delivery date',
       type: 'date',
       required: true,
       inList: true,
+    },
+    {
+      name: 'RequisitionerPersonnelNumber',
+      label: 'Requisitioner',
+      type: 'string',
+      required: true,
+      hint: 'Worker ID the line is requested for.',
+    },
+    {
+      name: 'AccountingDate',
+      label: 'Accounting date',
+      type: 'date',
+    },
+    {
+      name: 'VendorAccountNumber',
+      label: 'Vendor',
+      type: 'string',
     },
     {
       name: 'BuyingLegalEntityId',
@@ -192,7 +258,7 @@ export const lineEntity: EntityDef = {
       type: 'string',
     },
     {
-      name: 'ReceivingOperationalSiteId',
+      name: 'ReceivingSiteId',
       label: 'Site',
       type: 'string',
     },
@@ -202,12 +268,40 @@ export const lineEntity: EntityDef = {
       type: 'string',
     },
     {
-      name: 'RequisitionLineStatus',
+      name: 'BusinessJustificationCode',
+      label: 'Business justification code',
+      type: 'string',
+    },
+    {
+      name: 'BusinessJustificationDetails',
+      label: 'Business justification',
+      type: 'string',
+    },
+    {
+      name: 'IsPartialDeliveryPrevented',
+      label: 'Prevent partial delivery',
+      type: 'enum',
+      options: ['Yes', 'No'],
+    },
+    { name: 'ProjectId', label: 'Project', type: 'string' },
+    {
+      name: 'LineDiscountAmount',
+      label: 'Line discount',
+      type: 'number',
+    },
+    {
+      name: 'LineStatus',
       label: 'Line status',
       type: 'enum',
-      options: ['Draft', 'InReview', 'Approved', 'Rejected', 'Cancelled'],
+      options: ['Draft', 'InReview', 'Approved', 'Rejected', 'Cancelled', 'Closed'],
       readOnly: true,
       inList: true,
+    },
+    {
+      name: 'FormattedDeliveryAddress',
+      label: 'Delivery address',
+      type: 'string',
+      readOnly: true,
     },
   ],
 };
@@ -215,8 +309,30 @@ export const lineEntity: EntityDef = {
 /** Field name on the line entity that points back at its header. */
 export const LINE_PARENT_FIELD = 'RequisitionNumber';
 
+/**
+ * Line ordinal field. Named separately because it is not simply "LineNumber":
+ * sorting and next-number selection both reference it, and getting it wrong
+ * fails the whole query rather than degrading gracefully.
+ */
+export const LINE_NUMBER_FIELD = 'RequisitionLineNumber';
+
 export const listFields = (entity: EntityDef): string[] =>
   entity.fields.filter((f) => f.inList || f.key).map((f) => f.name);
+
+export const keyFields = (entity: EntityDef): FieldDef[] =>
+  entity.fields.filter((f) => f.key);
+
+/** F&O's legal-entity discriminator, where the entity exposes one. */
+export const COMPANY_FIELD = 'dataAreaId';
+
+/**
+ * Not every F&O data entity is scoped by dataAreaId, and the ones that are not
+ * reject any reference to it with HTTP 400 -- in a $select, a $filter, or a key
+ * predicate. Everything company-related is therefore conditional on the field
+ * actually being declared for the entity.
+ */
+export const hasCompanyField = (entity: EntityDef): boolean =>
+  entity.fields.some((f) => f.name === COMPANY_FIELD);
 
 export const writableFields = (entity: EntityDef): FieldDef[] =>
   entity.fields.filter((f) => !f.readOnly);

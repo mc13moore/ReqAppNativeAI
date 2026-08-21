@@ -8,8 +8,11 @@ import {
   type ODataCollection,
 } from './client.js';
 import {
+  COMPANY_FIELD,
+  LINE_NUMBER_FIELD,
   LINE_PARENT_FIELD,
   buildPayload,
+  hasCompanyField,
   headerEntity,
   lineEntity,
   listFields,
@@ -24,6 +27,36 @@ export type Record365 = Record<string, unknown>;
 export const normaliseCompany = (company?: string): string =>
   (company?.trim() || config.D365_DEFAULT_COMPANY).toLowerCase();
 
+/**
+ * Builds the company filter and cross-company flag for an entity.
+ *
+ * Entities without a dataAreaId property reject every mention of it with HTTP
+ * 400, so for those the request carries no company scoping at all and D365
+ * applies the service account's default company.
+ */
+function companyScope(
+  entity: typeof headerEntity,
+  company: string,
+): { filters: string[]; crossCompany: boolean } {
+  if (!hasCompanyField(entity)) return { filters: [], crossCompany: false };
+  return {
+    filters: [`${COMPANY_FIELD} eq ${odataString(company)}`],
+    crossCompany: true,
+  };
+}
+
+/** Builds the key predicate for a record, including dataAreaId only if declared. */
+function recordKey(
+  entity: typeof headerEntity,
+  company: string,
+  values: Record<string, string | number>,
+): string {
+  const key: Record<string, string | number> = hasCompanyField(entity)
+    ? { [COMPANY_FIELD]: company, ...values }
+    : { ...values };
+  return odataKey(key);
+}
+
 export interface ListHeadersOptions {
   company?: string;
   search?: string;
@@ -32,18 +65,12 @@ export interface ListHeadersOptions {
   skip?: number;
 }
 
-/**
- * Reads requisition headers for one legal entity.
- *
- * cross-company=true plus an explicit dataAreaId filter is deliberate: without
- * it, F&O silently scopes results to the default company of the service
- * account, which makes the company selector in the UI appear broken.
- */
 export async function listHeaders(
   options: ListHeadersOptions = {},
 ): Promise<ODataCollection<Record365> & { company: string }> {
   const company = normaliseCompany(options.company);
-  const filters = [`dataAreaId eq ${odataString(company)}`];
+  const scope = companyScope(headerEntity, company);
+  const filters = [...scope.filters];
 
   if (options.search?.trim()) {
     const term = options.search.trim();
@@ -57,12 +84,12 @@ export async function listHeaders(
 
   const result = await list<Record365>(headerEntity.entitySet, {
     select: listFields(headerEntity),
-    filter: filters.join(' and '),
+    filter: filters.length ? filters.join(' and ') : undefined,
     orderby: 'RequisitionNumber desc',
     top: Math.min(options.top ?? 50, 500),
     skip: options.skip ?? 0,
     count: true,
-    crossCompany: true,
+    crossCompany: scope.crossCompany,
   });
 
   return { ...result, company };
@@ -72,12 +99,12 @@ export async function getHeader(
   company: string,
   requisitionNumber: string,
 ): Promise<Record365> {
-  const key = odataKey({
-    dataAreaId: normaliseCompany(company),
+  const normalised = normaliseCompany(company);
+  const key = recordKey(headerEntity, normalised, {
     RequisitionNumber: requisitionNumber,
   });
   return request<Record365>(`${headerEntity.entitySet}${key}`, {
-    query: { crossCompany: true },
+    query: { crossCompany: hasCompanyField(headerEntity) },
   });
 }
 
@@ -85,16 +112,19 @@ export async function listLines(
   company: string,
   requisitionNumber: string,
 ): Promise<ODataCollection<Record365>> {
+  const normalised = normaliseCompany(company);
+  const scope = companyScope(lineEntity, normalised);
+
   return list<Record365>(lineEntity.entitySet, {
     select: listFields(lineEntity),
     filter: [
-      `dataAreaId eq ${odataString(normaliseCompany(company))}`,
+      ...scope.filters,
       `${LINE_PARENT_FIELD} eq ${odataString(requisitionNumber)}`,
     ].join(' and '),
-    orderby: 'LineNumber asc',
+    orderby: `${LINE_NUMBER_FIELD} asc`,
     top: 500,
     count: true,
-    crossCompany: true,
+    crossCompany: scope.crossCompany,
   });
 }
 
@@ -112,12 +142,14 @@ export async function createHeader(
   const { payload, errors } = buildPayload(headerEntity, body);
   if (errors.length) throw new ValidationError(errors);
 
-  payload['dataAreaId'] = normaliseCompany(company);
+  if (hasCompanyField(headerEntity)) {
+    payload[COMPANY_FIELD] = normaliseCompany(company);
+  }
 
   return request<Record365>(headerEntity.entitySet, {
     method: 'POST',
     body: payload,
-    query: { crossCompany: true },
+    query: { crossCompany: hasCompanyField(headerEntity) },
   });
 }
 
@@ -130,17 +162,19 @@ export async function createLine(
   if (errors.length) throw new ValidationError(errors);
 
   const normalised = normaliseCompany(company);
-  payload['dataAreaId'] = normalised;
+  if (hasCompanyField(lineEntity)) {
+    payload[COMPANY_FIELD] = normalised;
+  }
   payload[LINE_PARENT_FIELD] = requisitionNumber;
 
-  if (payload['LineNumber'] === undefined) {
-    payload['LineNumber'] = await nextLineNumber(normalised, requisitionNumber);
+  if (payload[LINE_NUMBER_FIELD] === undefined) {
+    payload[LINE_NUMBER_FIELD] = await nextLineNumber(normalised, requisitionNumber);
   }
 
   return request<Record365>(lineEntity.entitySet, {
     method: 'POST',
     body: payload,
-    query: { crossCompany: true },
+    query: { crossCompany: hasCompanyField(lineEntity) },
   });
 }
 
@@ -157,17 +191,18 @@ async function nextLineNumber(
   requisitionNumber: string,
 ): Promise<number> {
   try {
-    const existing = await list<{ LineNumber?: number }>(lineEntity.entitySet, {
-      select: ['LineNumber'],
+    const scope = companyScope(lineEntity, company);
+    const existing = await list<Record<string, unknown>>(lineEntity.entitySet, {
+      select: [LINE_NUMBER_FIELD],
       filter: [
-        `dataAreaId eq ${odataString(company)}`,
+        ...scope.filters,
         `${LINE_PARENT_FIELD} eq ${odataString(requisitionNumber)}`,
       ].join(' and '),
-      orderby: 'LineNumber desc',
+      orderby: `${LINE_NUMBER_FIELD} desc`,
       top: 1,
-      crossCompany: true,
+      crossCompany: scope.crossCompany,
     });
-    const highest = existing.value[0]?.LineNumber;
+    const highest = existing.value[0]?.[LINE_NUMBER_FIELD];
     return typeof highest === 'number' ? highest + 1 : 1;
   } catch (err) {
     // A failure here should not block the create; fall back to the first line.

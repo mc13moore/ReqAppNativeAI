@@ -56,7 +56,11 @@ export default async function systemRoutes(app: FastifyInstance) {
     const credential = credentialInfo;
 
     try {
-      await list(headerEntity.entitySet, { top: 1, select: ['dataAreaId'], crossCompany: true });
+      // No $select and no cross-company: this check exists to prove the
+      // identity can read the entity, and naming any specific property would
+      // make it fail with a 400 whenever the configured schema is wrong --
+      // reporting a connectivity problem that does not exist.
+      await list(headerEntity.entitySet, { top: 1 });
     } catch (err) {
       const status = err instanceof D365Error ? err.status : undefined;
 
