@@ -9,9 +9,11 @@ import { ZodError } from 'zod';
 import { config } from './config.js';
 import { D365Error } from './d365/client.js';
 import { ValidationError } from './d365/requisitions.js';
+import assistantRoutes from './routes/assistant.js';
 import metadataRoutes from './routes/metadata.js';
 import requisitionRoutes from './routes/requisitions.js';
 import systemRoutes from './routes/system.js';
+import workspaceRoutes from './routes/workspace.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webDist = resolve(here, config.WEB_DIST);
@@ -74,6 +76,8 @@ app.setErrorHandler((error, request, reply) => {
 await app.register(systemRoutes, { prefix: '/api' });
 await app.register(requisitionRoutes, { prefix: '/api' });
 await app.register(metadataRoutes, { prefix: '/api' });
+await app.register(workspaceRoutes, { prefix: '/api' });
+await app.register(assistantRoutes, { prefix: '/api' });
 
 if (existsSync(webDist)) {
   await app.register(fastifyStatic, { root: webDist });

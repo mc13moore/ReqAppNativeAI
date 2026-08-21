@@ -69,7 +69,10 @@ export default async function requisitionRoutes(app: FastifyInstance) {
       typeof body['dataAreaId'] === 'string' ? body['dataAreaId'] : undefined,
     );
 
-    const created = await createHeader(company, body);
+    const created = await createHeader(
+      { company, userEmail: request.user?.name },
+      body,
+    );
 
     request.log.info(
       { user: request.user?.name, company, requisition: created['RequisitionNumber'] },

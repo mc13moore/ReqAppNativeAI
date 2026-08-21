@@ -3,6 +3,7 @@ import { authEnabled, config } from '../config.js';
 import { readUser, requireUser } from '../auth/user.js';
 import { describeD365Credential, getD365Token } from '../auth/d365Token.js';
 import { D365Error, list } from '../d365/client.js';
+import { describePreparerLookup, resolvePreparer } from '../d365/preparer.js';
 import { headerEntity, lineEntity } from '../d365/entities.js';
 
 export default async function systemRoutes(app: FastifyInstance) {
@@ -19,12 +20,31 @@ export default async function systemRoutes(app: FastifyInstance) {
     authMode: config.AUTH_MODE,
   }));
 
+  /**
+   * Which D365 personnel number the signed-in user maps to.
+   *
+   * Exposed separately so the mapping can be checked before a requisition is
+   * created rather than discovered as a failed write, and so a wrong lookup
+   * entity is obvious rather than looking like a permissions problem.
+   */
+  app.get('/me/preparer', { preHandler: requireUser }, async (request) => {
+    const resolution = await resolvePreparer(request.user?.name);
+    return {
+      signedInAs: request.user?.name,
+      personnelNumber: resolution.personnelNumber,
+      source: resolution.source,
+      error: resolution.error,
+      lookup: describePreparerLookup(),
+    };
+  });
+
   /** Non-secret configuration the frontend needs to render itself. */
   app.get('/config', async (request) => ({
     defaultCompany: config.D365_DEFAULT_COMPANY,
     headerEntitySet: headerEntity.entitySet,
     lineEntitySet: lineEntity.entitySet,
     authEnabled,
+    demoMode: config.DEMO_MODE,
     signedIn: readUser(request) !== null,
   }));
 

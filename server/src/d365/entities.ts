@@ -69,8 +69,9 @@ export const headerEntity: EntityDef = {
       label: 'Requisition number',
       type: 'string',
       key: true,
+      // Assigned by the F&O number sequence, never keyed in.
+      readOnly: true,
       inList: true,
-      hint: 'Leave blank if the number sequence assigns it automatically.',
     },
     {
       name: 'RequisitionName',
@@ -97,15 +98,18 @@ export const headerEntity: EntityDef = {
     },
     {
       name: 'PreparerPersonnelNumber',
-      label: 'Preparer personnel number',
+      label: 'Preparer',
       type: 'string',
+      // Resolved from the signed-in user when the requisition is created.
+      readOnly: true,
       inList: true,
-      hint: 'Worker ID of the person preparing the requisition.',
     },
     {
       name: 'ProjectBuyingLegalEntityId',
       label: 'Buying legal entity',
       type: 'string',
+      // Defaulted from the company chosen on the create screen.
+      readOnly: true,
       inList: true,
     },
     {
@@ -122,11 +126,15 @@ export const headerEntity: EntityDef = {
       name: 'DefaultBusinessJustificationCode',
       label: 'Business justification code',
       type: 'string',
+      // Not captured on creation; shown only if D365 populates it.
+      readOnly: true,
     },
     {
       name: 'DefaultBusinessJustificationDetails',
       label: 'Business justification',
       type: 'string',
+      // Not captured on creation; shown only if D365 populates it.
+      readOnly: true,
     },
     {
       name: 'IsPurchaseRequisitionOnHold',
@@ -145,6 +153,8 @@ export const headerEntity: EntityDef = {
       name: 'DefaultProjectId',
       label: 'Project',
       type: 'string',
+      // Not captured on creation; shown only if D365 populates it.
+      readOnly: true,
     },
   ],
 };

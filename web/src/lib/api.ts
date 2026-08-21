@@ -1,16 +1,23 @@
 import type {
+  AnalyticsResponse,
   AppConfig,
   AppUser,
-  ListResponse,
+  ApprovalsResponse,
+  AssistantIntent,
+  AssistantReply,
+  ActivityEvent,
+  D365Health,
   PropertyInfo,
   Record365,
-  RequisitionDetail,
+  RequisitionDetailView,
   Schema,
+  WorkspaceListResponse,
 } from './types';
 
 /**
  * Error carrying the structured shape the API returns, so callers can show the
- * per-field validation messages rather than a single opaque string.
+ * per-field validation messages and the verbatim upstream complaint rather
+ * than a single opaque string.
  */
 export class ApiError extends Error {
   constructor(
@@ -18,12 +25,6 @@ export class ApiError extends Error {
     message: string,
     readonly errors: string[] = [],
     readonly source?: string,
-    /**
-     * Verbatim upstream error text. D365 explains precisely what it disliked --
-     * an unknown entity set, an unknown property, a malformed filter -- and
-     * that sentence is usually the whole diagnosis, so it must reach the user
-     * rather than being swallowed in favour of a generic summary.
-     */
     readonly detail?: string,
   ) {
     super(message);
@@ -72,32 +73,59 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+function qs(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text ? `?${text}` : '';
+}
+
 export const api = {
+  /* --- system --- */
   config: () => call<AppConfig>('/config'),
-
   me: () => call<{ user: AppUser }>('/me'),
-
   schema: () => call<Schema>('/schema'),
-
-  listRequisitions: (params: {
-    company?: string;
-    search?: string;
-    top?: number;
-    skip?: number;
-  }) => {
-    const query = new URLSearchParams();
-    if (params.company) query.set('company', params.company);
-    if (params.search) query.set('search', params.search);
-    if (params.top !== undefined) query.set('top', String(params.top));
-    if (params.skip !== undefined) query.set('skip', String(params.skip));
-    return call<ListResponse>(`/requisitions?${query}`);
-  },
-
-  getRequisition: (company: string, requisitionNumber: string) =>
-    call<RequisitionDetail>(
-      `/requisitions/${encodeURIComponent(company)}/${encodeURIComponent(requisitionNumber)}`,
+  checkD365: () => call<D365Health>('/health/d365'),
+  preparer: () =>
+    call<{ signedInAs?: string; personnelNumber: string | null; source: string; error?: string }>(
+      '/me/preparer',
     ),
 
+  /* --- workspace (read projections) --- */
+  requisitions: (params: {
+    search?: string;
+    status?: string;
+    stage?: string;
+    department?: string;
+    vendor?: string;
+    sync?: string;
+    priority?: string;
+    sort?: string;
+    direction?: 'asc' | 'desc';
+    top?: number;
+    skip?: number;
+  }) => call<WorkspaceListResponse>(`/workspace/requisitions${qs(params)}`),
+
+  requisitionDetail: (company: string, requisitionNumber: string) =>
+    call<RequisitionDetailView>(
+      `/workspace/requisitions/${encodeURIComponent(company)}/${encodeURIComponent(requisitionNumber)}`,
+    ),
+
+  analytics: () => call<AnalyticsResponse>('/workspace/analytics'),
+  activity: () => call<{ value: ActivityEvent[] }>('/workspace/activity'),
+  approvals: () => call<ApprovalsResponse>('/workspace/approvals'),
+
+  /* --- assistant --- */
+  ask: (body: {
+    prompt: string;
+    intent: AssistantIntent;
+    company?: string;
+    requisitionNumber?: string;
+  }) => call<AssistantReply>('/assistant/ask', { method: 'POST', body: JSON.stringify(body) }),
+
+  /* --- writes (direct D365 pass-through) --- */
   createRequisition: (body: Record365) =>
     call<Record365>('/requisitions', { method: 'POST', body: JSON.stringify(body) }),
 
@@ -107,12 +135,10 @@ export const api = {
       { method: 'POST', body: JSON.stringify(body) },
     ),
 
-  checkD365: () =>
-    call<{ status: string; environment: string; elapsedMs: number }>('/health/d365'),
-
+  /* --- metadata explorer --- */
   searchEntities: (search: string) =>
     call<{ count: number; truncated: boolean; value: { name: string; entityType: string }[] }>(
-      `/metadata/entities?search=${encodeURIComponent(search)}`,
+      `/metadata/entities${qs({ search })}`,
     ),
 
   describeEntity: (name: string) =>
