@@ -1,7 +1,6 @@
 import { config } from '../config.js';
-import { list } from './client.js';
+import { D365Error, list } from './client.js';
 import { lineEntity } from './entities.js';
-import { describeEntitySet, findEntitySets } from './metadata.js';
 import { listAllLines } from './requisitions.js';
 
 export interface LookupOption {
@@ -9,121 +8,119 @@ export interface LookupOption {
   label: string;
 }
 
+export interface LookupAttempt {
+  entity: string;
+  outcome: 'ok' | 'not-found' | 'rejected' | 'empty' | 'no-matching-field';
+  detail?: string;
+  /** Field names the probe row actually carried, when one came back. */
+  sampleFields?: string[];
+}
+
 export interface LookupResult {
   kind: string;
   options: LookupOption[];
   /**
-   * 'entity'     - read from a D365 reference entity
-   * 'discovered' - reference entity found by searching $metadata
-   * 'observed'   - distinct values already on requisition lines
-   * 'none'       - nothing worked; the form falls back to free text
+   * 'entity'   - read from a D365 reference entity
+   * 'observed' - distinct values already on requisition lines
+   * 'none'     - nothing worked; the form falls back to free text
    */
-  source: 'entity' | 'discovered' | 'observed' | 'none';
+  source: 'entity' | 'observed' | 'none';
   entity?: string;
   valueField?: string;
   labelField?: string;
-  error?: string;
+  /** Every entity tried, in order, with what happened. Drives diagnostics. */
+  attempts: LookupAttempt[];
   truncated?: boolean;
-}
-
-interface Candidate {
-  entity: string;
-  valueField: string;
-  labelField?: string;
 }
 
 interface LookupDefinition {
   kind: string;
-  /** Tried in order. The first that exists in $metadata with its value field wins. */
-  candidates: Candidate[];
-  /** Entity-set names matching this are searched when no candidate resolves. */
-  discoverPattern?: string;
-  /** Field names accepted as the value when auto-discovering. */
-  discoverValueFields?: string[];
-  discoverLabelFields?: string[];
+  /** Entity sets to probe, in order. */
+  entities: string[];
+  /** Acceptable value-field names, best first. */
+  valueFields: string[];
+  /** Acceptable label-field names, best first. */
+  labelFields: string[];
   /** Field on the requisition line holding the same value, for the last resort. */
-  observedFrom?: string;
+  observedFrom: string;
 }
 
 /**
- * Candidate reference entities, most specific first.
+ * Candidate reference entities and field names.
  *
- * F&O public entity names vary by version, and guessing a single name has
- * already cost this project several rounds of 400s and 404s. Each lookup
- * therefore carries several plausible names, every one is checked against the
- * live $metadata document before being queried, and anything explicitly
- * configured takes priority over the built-in guesses.
+ * F&O public entity and property names vary by version, and guessing a single
+ * pair has already cost this project several rounds of 400s and 404s. Rather
+ * than assert names, each entity is probed with a one-row read and the field
+ * names are then taken from the row that comes back -- so the only thing that
+ * has to be right is that one of the entity names exists.
  */
 function definitions(): LookupDefinition[] {
+  const configured = (entity: string, rest: string[]) =>
+    entity ? [entity, ...rest.filter((e) => e !== entity)] : rest;
+
   return [
     {
       kind: 'vendors',
-      candidates: [
-        ...(config.D365_VENDOR_ENTITY
-          ? [
-              {
-                entity: config.D365_VENDOR_ENTITY,
-                valueField: config.D365_VENDOR_NUMBER_FIELD,
-                labelField: config.D365_VENDOR_NAME_FIELD,
-              },
-            ]
-          : []),
-        { entity: 'VendorsV2', valueField: 'VendorAccountNumber', labelField: 'VendorOrganizationName' },
-        { entity: 'Vendors', valueField: 'VendorAccountNumber', labelField: 'VendorName' },
-        { entity: 'VendorsV3', valueField: 'VendorAccountNumber', labelField: 'VendorOrganizationName' },
+      entities: configured(config.D365_VENDOR_ENTITY, [
+        'VendorsV2',
+        'Vendors',
+        'VendorsV3',
+        'VendorMasters',
+      ]),
+      valueFields: [
+        config.D365_VENDOR_NUMBER_FIELD,
+        'VendorAccountNumber',
+        'VendorAccount',
+        'AccountNum',
       ],
-      discoverPattern: 'vendor',
-      discoverValueFields: ['VendorAccountNumber', 'AccountNum', 'VendorAccount'],
-      discoverLabelFields: ['VendorOrganizationName', 'VendorName', 'Name', 'OrganizationName'],
+      labelFields: [
+        config.D365_VENDOR_NAME_FIELD,
+        'VendorOrganizationName',
+        'VendorName',
+        'OrganizationName',
+        'Name',
+      ],
       observedFrom: 'VendorAccountNumber',
     },
     {
       kind: 'employees',
-      candidates: [
-        ...(config.D365_EMPLOYEE_ENTITY
-          ? [
-              {
-                entity: config.D365_EMPLOYEE_ENTITY,
-                valueField: config.D365_EMPLOYEE_NUMBER_FIELD,
-                labelField: config.D365_EMPLOYEE_NAME_FIELD,
-              },
-            ]
-          : []),
-        { entity: 'Employees', valueField: 'PersonnelNumber', labelField: 'Name' },
-        { entity: 'Workers', valueField: 'PersonnelNumber', labelField: 'Name' },
-        { entity: 'EmployeesV2', valueField: 'PersonnelNumber', labelField: 'Name' },
-      ],
-      discoverPattern: 'employee',
-      discoverValueFields: ['PersonnelNumber', 'WorkerPersonnelNumber'],
-      discoverLabelFields: ['Name', 'FullName', 'PersonName'],
+      entities: configured(config.D365_EMPLOYEE_ENTITY, [
+        'Employees',
+        'Workers',
+        'EmployeesV2',
+        'WorkersV2',
+      ]),
+      valueFields: [config.D365_EMPLOYEE_NUMBER_FIELD, 'PersonnelNumber', 'WorkerPersonnelNumber'],
+      labelFields: [config.D365_EMPLOYEE_NAME_FIELD, 'Name', 'FullName', 'PersonName'],
       observedFrom: 'RequisitionerPersonnelNumber',
     },
     {
       kind: 'categories',
-      candidates: [
-        ...(config.D365_CATEGORY_ENTITY
-          ? [{ entity: config.D365_CATEGORY_ENTITY, valueField: config.D365_CATEGORY_FIELD }]
-          : []),
-        { entity: 'ProcurementCategories', valueField: 'Name' },
-        { entity: 'ProcurementCategoryHierarchies', valueField: 'CategoryName' },
-        { entity: 'ProductCategories', valueField: 'CategoryName' },
+      entities: configured(config.D365_CATEGORY_ENTITY, [
+        'ProcurementCategories',
+        'ProcurementCategoryHierarchies',
+        'ProcurementCategoryHierarchyDetails',
+        'ProductCategories',
+        'EcoResProductCategories',
+      ]),
+      valueFields: [
+        config.D365_CATEGORY_FIELD,
+        'ProcurementCategoryName',
+        'CategoryName',
+        'Name',
       ],
-      discoverPattern: 'categor',
-      discoverValueFields: ['Name', 'CategoryName', 'ProcurementCategoryName'],
+      labelFields: ['ProcurementCategoryName', 'CategoryName', 'Name', 'Description'],
       observedFrom: 'ProcurementProductCategoryName',
     },
     {
       kind: 'units',
-      candidates: [
-        ...(config.D365_UNIT_ENTITY
-          ? [{ entity: config.D365_UNIT_ENTITY, valueField: config.D365_UNIT_FIELD }]
-          : []),
-        { entity: 'UnitOfMeasures', valueField: 'UnitOfMeasureSymbol' },
-        { entity: 'UnitOfMeasures', valueField: 'Symbol' },
-        { entity: 'UnitsOfMeasure', valueField: 'UnitSymbol' },
-      ],
-      discoverPattern: 'unitofmeasure',
-      discoverValueFields: ['UnitOfMeasureSymbol', 'Symbol', 'UnitSymbol'],
+      entities: configured(config.D365_UNIT_ENTITY, [
+        'UnitOfMeasures',
+        'UnitsOfMeasure',
+        'UnitOfMeasureTranslations',
+      ]),
+      valueFields: [config.D365_UNIT_FIELD, 'UnitOfMeasureSymbol', 'Symbol', 'UnitSymbol'],
+      labelFields: ['Description', 'UnitOfMeasureName', 'Name'],
       observedFrom: 'PurchaseUnitSymbol',
     },
   ];
@@ -132,10 +129,47 @@ function definitions(): LookupDefinition[] {
 const cache = new Map<string, { result: LookupResult; at: number }>();
 const TTL_MS = 15 * 60 * 1000;
 
-/** Maximum options fetched. Long enough for a real vendor master. */
+/** Long enough for a real vendor master without pulling an unbounded table. */
 const MAX_OPTIONS = 1000;
 
-async function queryOptions(
+const text = (value: unknown): string =>
+  typeof value === 'string' ? value.trim() : value === null || value === undefined ? '' : String(value).trim();
+
+/**
+ * Reads one row to find out whether the entity exists and what it contains.
+ *
+ * Deliberately issues no $select: naming a field that does not exist turns a
+ * cheap probe into a 400, which is exactly the failure this is trying to avoid.
+ * The field names are read off the row instead.
+ */
+async function probe(entity: string): Promise<
+  | { ok: true; fields: string[] }
+  | { ok: false; attempt: LookupAttempt }
+> {
+  try {
+    const response = await list<Record<string, unknown>>(entity, { top: 1 });
+    const row = response.value[0];
+
+    if (!row) {
+      return { ok: false, attempt: { entity, outcome: 'empty', detail: 'Entity returned no rows.' } };
+    }
+
+    const fields = Object.keys(row).filter((key) => !key.startsWith('@'));
+    return { ok: true, fields };
+  } catch (err) {
+    const status = err instanceof D365Error ? err.status : undefined;
+    return {
+      ok: false,
+      attempt: {
+        entity,
+        outcome: status === 404 ? 'not-found' : 'rejected',
+        detail: err instanceof Error ? err.message.slice(0, 300) : String(err),
+      },
+    };
+  }
+}
+
+async function fetchOptions(
   entity: string,
   valueField: string,
   labelField: string | undefined,
@@ -152,76 +186,15 @@ async function queryOptions(
   const options: LookupOption[] = [];
 
   for (const record of response.value) {
-    const rawValue = record[valueField];
-    const value = typeof rawValue === 'string' ? rawValue.trim() : String(rawValue ?? '').trim();
+    const value = text(record[valueField]);
     if (!value || seen.has(value)) continue;
     seen.add(value);
 
-    const rawLabel = labelField ? record[labelField] : undefined;
-    const label = typeof rawLabel === 'string' && rawLabel.trim() ? rawLabel.trim() : value;
-
-    options.push({ value, label });
+    const label = labelField ? text(record[labelField]) : '';
+    options.push({ value, label: label || value });
   }
 
   return options;
-}
-
-/** Finds the first candidate that actually exists, according to $metadata. */
-async function resolveCandidate(
-  candidates: Candidate[],
-): Promise<{ candidate: Candidate; note?: string } | null> {
-  for (const candidate of candidates) {
-    try {
-      const described = await describeEntitySet(candidate.entity);
-      if (!described) continue;
-
-      const names = new Set(described.properties.map((p) => p.name));
-      if (!names.has(candidate.valueField)) continue;
-
-      return {
-        candidate: {
-          entity: described.entitySet,
-          valueField: candidate.valueField,
-          // Drop a label field the entity does not actually have rather than
-          // letting $select fail the whole query with a 400.
-          labelField:
-            candidate.labelField && names.has(candidate.labelField)
-              ? candidate.labelField
-              : undefined,
-        },
-      };
-    } catch {
-      // Metadata unavailable: fall through and let the caller try the next
-      // strategy rather than failing the lookup outright.
-      continue;
-    }
-  }
-  return null;
-}
-
-/** Searches $metadata for any entity set carrying one of the expected fields. */
-async function discover(definition: LookupDefinition): Promise<Candidate | null> {
-  if (!definition.discoverPattern || !definition.discoverValueFields) return null;
-
-  try {
-    const matches = await findEntitySets(definition.discoverPattern);
-
-    for (const match of matches.slice(0, 25)) {
-      const described = await describeEntitySet(match.name);
-      if (!described) continue;
-
-      const names = new Set(described.properties.map((p) => p.name));
-      const valueField = definition.discoverValueFields.find((f) => names.has(f));
-      if (!valueField) continue;
-
-      const labelField = definition.discoverLabelFields?.find((f) => names.has(f));
-      return { entity: described.entitySet, valueField, labelField };
-    }
-  } catch {
-    return null;
-  }
-
-  return null;
 }
 
 async function observedValues(field: string): Promise<string[]> {
@@ -229,8 +202,8 @@ async function observedValues(field: string): Promise<string[]> {
   const values = new Set<string>();
 
   for (const record of lines.value) {
-    const value = record[field];
-    if (typeof value === 'string' && value.trim()) values.add(value.trim());
+    const value = text(record[field]);
+    if (value) values.add(value);
   }
 
   return [...values].sort();
@@ -239,90 +212,93 @@ async function observedValues(field: string): Promise<string[]> {
 /**
  * Loads a dropdown's options.
  *
- * Four strategies in descending order of quality: a configured or known
- * entity, an entity discovered from $metadata, values already present on
- * requisition lines, and finally nothing -- at which point the form offers a
- * free-text input rather than an empty select.
+ * Probes each candidate entity in turn, takes the field names from whichever
+ * one answers, and falls back to the distinct values already present on
+ * requisition lines. Every attempt is recorded so the diagnostics screen can
+ * show exactly which entity names were tried and what D365 said about each --
+ * that record is what turns a missing dropdown into a fixable problem.
  */
 export async function loadLookup(kind: string, refresh = false): Promise<LookupResult> {
   const definition = definitions().find((d) => d.kind === kind);
   if (!definition) {
-    return { kind, options: [], source: 'none', error: `Unknown lookup "${kind}".` };
+    return { kind, options: [], source: 'none', attempts: [] };
   }
 
   const cached = cache.get(kind);
   if (cached && !refresh && Date.now() - cached.at < TTL_MS) return cached.result;
 
+  const attempts: LookupAttempt[] = [];
   let result: LookupResult | null = null;
-  let lastError: string | undefined;
 
-  const resolved = await resolveCandidate(definition.candidates);
-  if (resolved) {
-    try {
-      const options = await queryOptions(
-        resolved.candidate.entity,
-        resolved.candidate.valueField,
-        resolved.candidate.labelField,
-      );
-      if (options.length > 0) {
-        result = {
-          kind,
-          options,
-          source: 'entity',
-          entity: resolved.candidate.entity,
-          valueField: resolved.candidate.valueField,
-          labelField: resolved.candidate.labelField,
-          truncated: options.length >= MAX_OPTIONS,
-        };
-      } else {
-        lastError = `${resolved.candidate.entity} returned no rows.`;
-      }
-    } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+  for (const entity of definition.entities) {
+    const probed = await probe(entity);
+
+    if (!probed.ok) {
+      attempts.push(probed.attempt);
+      continue;
     }
-  } else {
-    lastError = 'No known reference entity matched in $metadata.';
+
+    const available = new Set(probed.fields);
+    const valueField = definition.valueFields.find((f) => f && available.has(f));
+
+    if (!valueField) {
+      attempts.push({
+        entity,
+        outcome: 'no-matching-field',
+        detail: `None of ${definition.valueFields.filter(Boolean).join(', ')} exist on this entity.`,
+        sampleFields: probed.fields.slice(0, 30),
+      });
+      continue;
+    }
+
+    const labelField = definition.labelFields.find(
+      (f) => f && f !== valueField && available.has(f),
+    );
+
+    try {
+      const options = await fetchOptions(entity, valueField, labelField);
+
+      if (options.length === 0) {
+        attempts.push({ entity, outcome: 'empty', detail: 'Query returned no usable values.' });
+        continue;
+      }
+
+      attempts.push({ entity, outcome: 'ok', detail: `${options.length} options` });
+      result = {
+        kind,
+        options,
+        source: 'entity',
+        entity,
+        valueField,
+        labelField,
+        attempts,
+        truncated: options.length >= MAX_OPTIONS,
+      };
+      break;
+    } catch (err) {
+      attempts.push({
+        entity,
+        outcome: 'rejected',
+        detail: err instanceof Error ? err.message.slice(0, 300) : String(err),
+      });
+    }
   }
 
   if (!result) {
-    const found = await discover(definition);
-    if (found) {
-      try {
-        const options = await queryOptions(found.entity, found.valueField, found.labelField);
-        if (options.length > 0) {
-          result = {
-            kind,
-            options,
-            source: 'discovered',
-            entity: found.entity,
-            valueField: found.valueField,
-            labelField: found.labelField,
-            error: lastError,
-            truncated: options.length >= MAX_OPTIONS,
-          };
-        }
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-      }
-    }
-  }
-
-  if (!result && definition.observedFrom) {
     try {
       const values = await observedValues(definition.observedFrom);
       result = {
         kind,
         options: values.map((value) => ({ value, label: value })),
         source: values.length > 0 ? 'observed' : 'none',
-        entity: lineEntity.entitySet,
-        error: lastError,
+        entity: values.length > 0 ? lineEntity.entitySet : undefined,
+        valueField: definition.observedFrom,
+        attempts,
       };
     } catch {
-      /* fall through to 'none' */
+      result = { kind, options: [], source: 'none', attempts };
     }
   }
-
-  result ??= { kind, options: [], source: 'none', error: lastError };
 
   cache.set(kind, { result, at: Date.now() });
   return result;
@@ -330,6 +306,12 @@ export async function loadLookup(kind: string, refresh = false): Promise<LookupR
 
 export async function loadAllLookups(refresh = false): Promise<Record<string, LookupResult>> {
   const kinds = definitions().map((d) => d.kind);
-  const results = await Promise.all(kinds.map((kind) => loadLookup(kind, refresh)));
+  // Sequential rather than parallel: four concurrent probe-and-fetch chains
+  // against F&O is enough to trip its throttling, and the whole set is cached
+  // for fifteen minutes afterwards.
+  const results: LookupResult[] = [];
+  for (const kind of kinds) {
+    results.push(await loadLookup(kind, refresh));
+  }
   return Object.fromEntries(results.map((result) => [result.kind, result]));
 }

@@ -461,9 +461,7 @@ export function CreateRequisitionPage() {
 
 /** Warns when a dropdown could not use a proper reference entity. */
 function LookupNotice({ lookups }: { lookups: Record<string, LookupResult> }) {
-  const degraded = Object.values(lookups).filter(
-    (l) => l.source !== 'entity' && l.source !== 'discovered',
-  );
+  const degraded = Object.values(lookups).filter((l) => l.source !== 'entity');
   if (degraded.length === 0) return null;
 
   return (

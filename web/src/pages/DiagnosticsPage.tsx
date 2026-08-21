@@ -94,11 +94,11 @@ export function DiagnosticsPage() {
           {lookups.loading && <Spinner label="Reading reference entities…" />}
           {lookups.error ? <ErrorBanner error={lookups.error} /> : null}
           {lookups.data && (
-            <>
-              <div className="stack stack--sm">
-                {Object.values(lookups.data).map((lookup) => (
-                  <div className="row row--between" key={lookup.kind}>
-                    <span className="small" style={{ fontWeight: 550, textTransform: 'capitalize' }}>
+            <div className="stack stack--sm">
+              {Object.values(lookups.data).map((lookup) => (
+                <div key={lookup.kind}>
+                  <div className="row row--between">
+                    <span className="small" style={{ fontWeight: 600, textTransform: 'capitalize' }}>
                       {lookup.kind}
                     </span>
                     <div className="row" style={{ gap: '0.4rem' }}>
@@ -113,30 +113,45 @@ export function DiagnosticsPage() {
                         }
                       >
                         {lookup.source === 'entity'
-                          ? lookup.entity
+                          ? `${lookup.entity}.${lookup.valueField}`
                           : lookup.source === 'observed'
                             ? 'from existing lines'
                             : 'unavailable'}
                       </Badge>
                     </div>
                   </div>
-                ))}
-              </div>
 
-              <p className="field__hint" style={{ marginTop: '0.7rem' }}>
-                A list showing <strong>from existing lines</strong> means its reference entity could
-                not be read, so the options are the distinct values already present on requisition
-                lines. Correct the entity with the matching <code>D365_*_ENTITY</code> variable.
+                  {lookup.source !== 'entity' && lookup.attempts.length > 0 && (
+                    <details className="tiny" style={{ marginTop: '0.3rem' }}>
+                      <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)' }}>
+                        {lookup.attempts.length} entit
+                        {lookup.attempts.length === 1 ? 'y' : 'ies'} tried
+                      </summary>
+                      <ul style={{ margin: '0.35rem 0 0', paddingLeft: '1.1rem' }}>
+                        {lookup.attempts.map((attempt) => (
+                          <li key={attempt.entity + attempt.outcome} className="dim">
+                            <code>{attempt.entity}</code> — {attempt.outcome}
+                            {attempt.detail ? `: ${attempt.detail}` : ''}
+                            {attempt.sampleFields && (
+                              <div style={{ marginTop: '0.2rem' }}>
+                                Fields present: {attempt.sampleFields.join(', ')}
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              ))}
+
+              <p className="field__hint" style={{ marginTop: '0.5rem' }}>
+                A list showing <strong>from existing lines</strong> or{' '}
+                <strong>unavailable</strong> means no reference entity answered. Expand the
+                attempts to see what each one returned, then point the app at the right entity with
+                the matching <code>D365_*_ENTITY</code> variable.
               </p>
-
-              {Object.values(lookups.data)
-                .filter((l) => l.error)
-                .map((l) => (
-                  <p className="tiny dim" key={l.kind} style={{ marginTop: '0.4rem' }}>
-                    <strong>{l.kind}:</strong> {l.error}
-                  </p>
-                ))}
-            </>
+            </div>
           )}
         </div>
       </div>

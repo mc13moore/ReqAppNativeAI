@@ -52,18 +52,26 @@ export interface LookupOption {
   label: string;
 }
 
+export interface LookupAttempt {
+  entity: string;
+  outcome: 'ok' | 'not-found' | 'rejected' | 'empty' | 'no-matching-field';
+  detail?: string;
+  sampleFields?: string[];
+}
+
 export interface LookupResult {
   kind: string;
   options: LookupOption[];
   /**
-   * 'entity'/'discovered' are proper reference lists; 'observed' means the
-   * options are only the values already present on existing requisition lines.
+   * 'entity' is a proper reference list; 'observed' means the options are only
+   * the values already present on existing requisition lines.
    */
-  source: 'entity' | 'discovered' | 'observed' | 'none';
+  source: 'entity' | 'observed' | 'none';
   entity?: string;
   valueField?: string;
   labelField?: string;
-  error?: string;
+  /** Every entity tried, with what D365 said about each. */
+  attempts: LookupAttempt[];
   truncated?: boolean;
 }
 
