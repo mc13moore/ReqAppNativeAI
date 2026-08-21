@@ -85,7 +85,8 @@ export const headerEntity: EntityDef = {
       label: 'Purpose',
       type: 'enum',
       options: ['Consumption', 'Replenishment'],
-      required: true,
+      // Always Consumption for requisitions raised here; set server-side.
+      readOnly: true,
       inList: true,
     },
     {
@@ -106,9 +107,10 @@ export const headerEntity: EntityDef = {
     },
     {
       name: 'ProjectBuyingLegalEntityId',
-      label: 'Buying legal entity',
+      label: 'Project legal entity',
       type: 'string',
-      // Defaulted from the company chosen on the create screen.
+      // Backed by CompanyInfoDefault, which D365 will only accept alongside a
+      // project. Never written by this application.
       readOnly: true,
       inList: true,
     },
@@ -116,11 +118,15 @@ export const headerEntity: EntityDef = {
       name: 'DefaultAccountingDate',
       label: 'Accounting date',
       type: 'date',
+      // Mirrors the requested date; set server-side rather than entered.
+      readOnly: true,
     },
     {
       name: 'DefaultRequestedDate',
       label: 'Requested date',
       type: 'date',
+      required: true,
+      hint: 'Also used as the accounting date.',
     },
     {
       name: 'DefaultBusinessJustificationCode',

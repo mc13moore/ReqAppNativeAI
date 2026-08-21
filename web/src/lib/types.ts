@@ -55,10 +55,16 @@ export interface LookupOption {
 export interface LookupResult {
   kind: string;
   options: LookupOption[];
-  /** Where the options came from; 'observed' means values seen on real lines. */
-  source: 'entity' | 'observed' | 'none';
+  /**
+   * 'entity'/'discovered' are proper reference lists; 'observed' means the
+   * options are only the values already present on existing requisition lines.
+   */
+  source: 'entity' | 'discovered' | 'observed' | 'none';
   entity?: string;
+  valueField?: string;
+  labelField?: string;
   error?: string;
+  truncated?: boolean;
 }
 
 export interface CreateWithLinesResult {

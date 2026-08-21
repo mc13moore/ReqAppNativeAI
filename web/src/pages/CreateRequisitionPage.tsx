@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { IconAlert, IconChevronLeft, IconDoc, IconPlus, IconClose } from '../components/Icons';
+import { IconAlert, IconChevronLeft, IconClose, IconPlus } from '../components/Icons';
 import { Badge, EmptyState, ErrorBanner, Skeleton } from '../components/primitives';
 import { api } from '../lib/api';
 import { useApp } from '../lib/AppContext';
@@ -12,28 +12,26 @@ import type { CreateWithLinesResult, LookupResult, Record365 } from '../lib/type
 interface DraftLine {
   id: number;
   category: string;
-  requisitioner: string;
+  employee: string;
   description: string;
   quantity: string;
   unit: string;
   unitPrice: string;
   vendor: string;
-  requestedDate: string;
 }
 
-const emptyLine = (id: number, preparer: string): DraftLine => ({
+const emptyLine = (id: number, employee: string): DraftLine => ({
   id,
   category: '',
-  requisitioner: preparer,
+  employee,
   description: '',
   quantity: '1',
   unit: '',
   unitPrice: '',
   vendor: '',
-  requestedDate: todayIso(),
 });
 
-/** Net amount for a draft line. Quantity x unit price, to two decimals. */
+/** Net amount for a line: quantity × unit price, to two decimals. */
 function netAmount(line: DraftLine): number {
   const quantity = Number(line.quantity);
   const price = Number(line.unitPrice);
@@ -47,8 +45,9 @@ export function CreateRequisitionPage() {
 
   const lookups = useAsync(() => api.lookups(), []);
 
-  const [company, setCompany] = useState(config.defaultCompany.toUpperCase());
-  const [header, setHeader] = useState<Record<string, string>>({});
+  const [header, setHeader] = useState<Record<string, string>>({
+    DefaultRequestedDate: todayIso(),
+  });
   const [lines, setLines] = useState<DraftLine[]>([
     emptyLine(1, config.preparerPersonnelNumber),
   ]);
@@ -66,7 +65,16 @@ export function CreateRequisitionPage() {
   const total = lines.reduce((sum, line) => sum + netAmount(line), 0);
 
   const addLine = () => {
-    setLines((prev) => [...prev, emptyLine(nextId, config.preparerPersonnelNumber)]);
+    setLines((prev) => {
+      // Carry the previous line's category and vendor forward: consecutive
+      // lines on one requisition usually share them, and retyping is friction.
+      const last = prev[prev.length - 1];
+      const fresh = emptyLine(nextId, config.preparerPersonnelNumber);
+      return [
+        ...prev,
+        last ? { ...fresh, category: last.category, vendor: last.vendor, unit: last.unit } : fresh,
+      ];
+    });
     setNextId((n) => n + 1);
   };
 
@@ -77,7 +85,7 @@ export function CreateRequisitionPage() {
 
   const missingHeader = headerFields.filter((f) => f.required && !header[f.name]?.trim());
   const incompleteLines = lines.filter(
-    (line) => !line.description.trim() || !Number(line.quantity) || !line.requisitioner.trim(),
+    (line) => !line.description.trim() || !Number(line.quantity) || !line.employee.trim(),
   );
   const canSubmit =
     !saving && missingHeader.length === 0 && lines.length > 0 && incompleteLines.length === 0;
@@ -93,12 +101,17 @@ export function CreateRequisitionPage() {
         if (value.trim()) headerPayload[name] = value;
       }
 
+      const requestedDate = header['DefaultRequestedDate'] ?? todayIso();
+
       const linePayload: Record365[] = lines.map((line) => {
         const payload: Record365 = {
           LineDescription: line.description,
           RequestedPurchaseQuantity: Number(line.quantity),
-          RequisitionerPersonnelNumber: line.requisitioner,
-          RequestedDate: line.requestedDate,
+          RequisitionerPersonnelNumber: line.employee,
+          // Lines inherit the header's requested date rather than each
+          // carrying its own; one date per requisition is what this workflow
+          // actually needs.
+          RequestedDate: requestedDate,
         };
         // Blank optional values are omitted rather than sent empty: D365
         // rejects empty strings on typed fields.
@@ -110,7 +123,6 @@ export function CreateRequisitionPage() {
       });
 
       const created = await api.createRequisitionWithLines({
-        company,
         header: headerPayload,
         lines: linePayload,
       });
@@ -121,7 +133,7 @@ export function CreateRequisitionPage() {
       // stay on screen so the failures can actually be read.
       if (created.failures.length === 0) {
         navigate(
-          `/requisitions/${created.company.toLowerCase()}/${encodeURIComponent(created.requisitionNumber)}`,
+          `/requisitions/${(created.company || 'usmf').toLowerCase()}/${encodeURIComponent(created.requisitionNumber)}`,
         );
       }
     } catch (err) {
@@ -132,7 +144,7 @@ export function CreateRequisitionPage() {
   };
 
   return (
-    <div className="page" style={{ maxWidth: 1240 }}>
+    <div className="page" style={{ maxWidth: 1320 }}>
       <Link
         to="/requisitions"
         className="small row"
@@ -152,6 +164,7 @@ export function CreateRequisitionPage() {
         </div>
         <div className="row">
           <Badge tone="info">Preparer {config.preparerPersonnelNumber}</Badge>
+          <Badge tone="neutral">Consumption</Badge>
         </div>
       </div>
 
@@ -162,8 +175,8 @@ export function CreateRequisitionPage() {
           <IconAlert size={17} style={{ flexShrink: 0, marginTop: 1 }} />
           <div style={{ flex: 1 }}>
             <div className="banner__title">
-              Requisition {result.requisitionNumber} was created, but{' '}
-              {result.failures.length} of {result.linesRequested} lines failed
+              {result.requisitionNumber} was created, but {result.failures.length} of{' '}
+              {result.linesRequested} lines failed
             </div>
             <p>
               {result.linesCreated} line{result.linesCreated === 1 ? '' : 's'} saved. The header
@@ -177,7 +190,7 @@ export function CreateRequisitionPage() {
               ))}
             </ul>
             <Link
-              to={`/requisitions/${result.company.toLowerCase()}/${encodeURIComponent(result.requisitionNumber)}`}
+              to={`/requisitions/${(result.company || 'usmf').toLowerCase()}/${encodeURIComponent(result.requisitionNumber)}`}
               className="small"
               style={{ fontWeight: 650 }}
             >
@@ -190,30 +203,13 @@ export function CreateRequisitionPage() {
       {/* --- Header ------------------------------------------------------- */}
       <div className="card" style={{ marginBottom: '1rem' }}>
         <div className="card__head">
-          <h2 className="card__title">
-            <IconDoc size={15} />
-            Requisition header
-          </h2>
+          <h2 className="card__title">Requisition details</h2>
           <span className="card__hint">
-            Number assigned by Dynamics 365 · preparer {config.preparerPersonnelNumber}
+            Number, purpose and accounting date are set automatically
           </span>
         </div>
 
         <div className="form__grid">
-          <div className="field">
-            <label className="field__label" htmlFor="company">
-              Legal entity
-            </label>
-            <input
-              id="company"
-              className="field__input"
-              value={company}
-              onChange={(e) => setCompany(e.target.value.toUpperCase())}
-              disabled={saving}
-            />
-            <p className="field__hint">Sets the buying legal entity.</p>
-          </div>
-
           {headerFields.map((field) => {
             const id = `header-${field.name}`;
             return (
@@ -241,7 +237,9 @@ export function CreateRequisitionPage() {
                   <input
                     id={id}
                     className="field__input"
-                    type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
+                    type={
+                      field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'
+                    }
                     value={header[field.name] ?? ''}
                     onChange={(e) => setHeader((h) => ({ ...h, [field.name]: e.target.value }))}
                     disabled={saving}
@@ -254,308 +252,276 @@ export function CreateRequisitionPage() {
         </div>
       </div>
 
-      {/* --- Lines -------------------------------------------------------- */}
-      <div className="card">
-        <div className="card__head">
+      {/* --- Lines: one row each ------------------------------------------ */}
+      <div className="card card--flush">
+        <div className="card__head" style={{ padding: '1.15rem 1.15rem 0' }}>
           <h2 className="card__title">Lines ({lines.length})</h2>
           <div className="row">
             {lookups.data && <LookupNotice lookups={lookups.data} />}
-            <button type="button" className="btn btn--ghost btn--sm" onClick={addLine} disabled={saving}>
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={addLine}
+              disabled={saving}
+            >
               <IconPlus size={14} />
               Add line
             </button>
           </div>
         </div>
 
-        {lookups.loading && <Skeleton variant="row" count={2} />}
+        <div style={{ padding: '0.9rem 1.15rem 1.15rem' }}>
+          {lookups.loading ? (
+            <Skeleton variant="row" count={2} />
+          ) : lines.length === 0 ? (
+            <EmptyState
+              title="No lines yet"
+              hint="A requisition needs at least one line."
+              action={
+                <button type="button" className="btn btn--primary btn--sm" onClick={addLine}>
+                  <IconPlus size={14} />
+                  Add the first line
+                </button>
+              }
+            />
+          ) : (
+            <div className="table-wrap">
+              <table className="table line-editor">
+                <thead>
+                  <tr>
+                    <th style={{ width: 34 }}>#</th>
+                    <th style={{ minWidth: 220 }}>Description *</th>
+                    <th style={{ minWidth: 160 }}>Category</th>
+                    <th style={{ minWidth: 150 }}>Employee *</th>
+                    <th style={{ width: 90 }} className="num">
+                      Qty *
+                    </th>
+                    <th style={{ width: 110 }}>Unit</th>
+                    <th style={{ width: 120 }} className="num">
+                      Unit price
+                    </th>
+                    <th style={{ width: 120 }} className="num">
+                      Net amount
+                    </th>
+                    <th style={{ minWidth: 160 }}>Vendor</th>
+                    <th style={{ width: 40 }} aria-label="Remove" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((line, index) => (
+                    <tr key={line.id}>
+                      <td className="dim mono">{index + 1}</td>
 
-        {lines.length === 0 ? (
-          <EmptyState
-            title="No lines yet"
-            hint="A requisition needs at least one line."
-            action={
-              <button type="button" className="btn btn--primary btn--sm" onClick={addLine}>
-                <IconPlus size={14} />
-                Add the first line
-              </button>
-            }
-          />
-        ) : (
-          <div className="stack">
-            {lines.map((line, index) => (
-              <LineEditor
-                key={line.id}
-                index={index}
-                line={line}
-                lookups={lookups.data}
-                disabled={saving}
-                onChange={(patch) => updateLine(line.id, patch)}
-                onRemove={lines.length > 1 ? () => removeLine(line.id) : undefined}
-              />
-            ))}
+                      <td>
+                        <input
+                          className="cell-input"
+                          value={line.description}
+                          onChange={(e) => updateLine(line.id, { description: e.target.value })}
+                          disabled={saving}
+                          placeholder="What is being requested"
+                          aria-label={`Line ${index + 1} description`}
+                        />
+                      </td>
+
+                      <td>
+                        <CellLookup
+                          lookup={lookups.data?.['categories']}
+                          value={line.category}
+                          onChange={(value) => updateLine(line.id, { category: value })}
+                          disabled={saving}
+                          label={`Line ${index + 1} category`}
+                        />
+                      </td>
+
+                      <td>
+                        <CellLookup
+                          lookup={lookups.data?.['employees']}
+                          value={line.employee}
+                          onChange={(value) => updateLine(line.id, { employee: value })}
+                          disabled={saving}
+                          label={`Line ${index + 1} employee`}
+                        />
+                      </td>
+
+                      <td>
+                        <input
+                          className="cell-input num"
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={line.quantity}
+                          onChange={(e) => updateLine(line.id, { quantity: e.target.value })}
+                          disabled={saving}
+                          aria-label={`Line ${index + 1} quantity`}
+                        />
+                      </td>
+
+                      <td>
+                        <CellLookup
+                          lookup={lookups.data?.['units']}
+                          value={line.unit}
+                          onChange={(value) => updateLine(line.id, { unit: value })}
+                          disabled={saving}
+                          label={`Line ${index + 1} unit of measure`}
+                        />
+                      </td>
+
+                      <td>
+                        <input
+                          className="cell-input num"
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={line.unitPrice}
+                          onChange={(e) => updateLine(line.id, { unitPrice: e.target.value })}
+                          disabled={saving}
+                          placeholder="0.00"
+                          aria-label={`Line ${index + 1} unit price`}
+                        />
+                      </td>
+
+                      <td className="num numeric" style={{ fontWeight: 650 }}>
+                        {money(netAmount(line))}
+                      </td>
+
+                      <td>
+                        <CellLookup
+                          lookup={lookups.data?.['vendors']}
+                          value={line.vendor}
+                          onChange={(value) => updateLine(line.id, { vendor: value })}
+                          disabled={saving}
+                          label={`Line ${index + 1} vendor`}
+                        />
+                      </td>
+
+                      <td>
+                        {lines.length > 1 && (
+                          <button
+                            type="button"
+                            className="btn btn--subtle btn--icon btn--sm"
+                            onClick={() => removeLine(line.id)}
+                            disabled={saving}
+                            aria-label={`Remove line ${index + 1}`}
+                          >
+                            <IconClose size={13} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div style={{ marginTop: '1rem', marginLeft: 'auto', maxWidth: 300 }}>
+            <div className="total-row total-row--grand">
+              <span>Total</span>
+              <span className="numeric">{money(total)}</span>
+            </div>
+            <p className="tiny dim" style={{ marginTop: '0.3rem' }}>
+              Dynamics 365 recalculates amounts on save.
+            </p>
           </div>
-        )}
 
-        <div style={{ marginTop: '1.15rem', marginLeft: 'auto', maxWidth: 320 }}>
-          <div className="total-row total-row--grand">
-            <span>Requisition total</span>
-            <span className="numeric">{money(total)}</span>
+          <div className="form__actions">
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => void submit()}
+              disabled={!canSubmit}
+            >
+              {saving
+                ? 'Creating…'
+                : `Create requisition with ${lines.length} line${lines.length === 1 ? '' : 's'}`}
+            </button>
+            <button
+              type="button"
+              className="btn btn--subtle"
+              onClick={() => navigate('/requisitions')}
+              disabled={saving}
+            >
+              Cancel
+            </button>
           </div>
-          <p className="tiny dim" style={{ marginTop: '0.3rem' }}>
-            Calculated locally from quantity × unit price. Dynamics 365 recalculates on save.
-          </p>
-        </div>
 
-        <div className="form__actions">
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={() => void submit()}
-            disabled={!canSubmit}
-          >
-            {saving ? 'Creating…' : `Create requisition with ${lines.length} line${lines.length === 1 ? '' : 's'}`}
-          </button>
-          <button
-            type="button"
-            className="btn btn--subtle"
-            onClick={() => navigate('/requisitions')}
-            disabled={saving}
-          >
-            Cancel
-          </button>
+          {(missingHeader.length > 0 || incompleteLines.length > 0) && (
+            <p className="field__hint" style={{ marginTop: '0.6rem', color: 'var(--danger)' }}>
+              {missingHeader.length > 0 &&
+                `Header needs: ${missingHeader.map((f) => f.label).join(', ')}. `}
+              {incompleteLines.length > 0 &&
+                `${incompleteLines.length} line${incompleteLines.length === 1 ? '' : 's'} still need a description, quantity and employee.`}
+            </p>
+          )}
         </div>
-
-        {(missingHeader.length > 0 || incompleteLines.length > 0) && (
-          <p className="field__hint" style={{ marginTop: '0.6rem', color: 'var(--danger)' }}>
-            {missingHeader.length > 0 && `Header needs: ${missingHeader.map((f) => f.label).join(', ')}. `}
-            {incompleteLines.length > 0 &&
-              `${incompleteLines.length} line${incompleteLines.length === 1 ? '' : 's'} still need a description, quantity and employee.`}
-          </p>
-        )}
       </div>
     </div>
   );
 }
 
-/** Warns when a dropdown fell back to values observed on existing lines. */
+/** Warns when a dropdown could not use a proper reference entity. */
 function LookupNotice({ lookups }: { lookups: Record<string, LookupResult> }) {
-  const degraded = Object.values(lookups).filter((l) => l.source !== 'entity');
+  const degraded = Object.values(lookups).filter(
+    (l) => l.source !== 'entity' && l.source !== 'discovered',
+  );
   if (degraded.length === 0) return null;
 
   return (
     <Badge tone="warning" dot>
-      {degraded.length} list{degraded.length === 1 ? '' : 's'} from existing lines
+      {degraded.map((l) => l.kind).join(', ')} limited
     </Badge>
   );
 }
 
-function LineEditor({
-  index,
-  line,
-  lookups,
-  disabled,
-  onChange,
-  onRemove,
-}: {
-  index: number;
-  line: DraftLine;
-  lookups: Record<string, LookupResult> | null;
-  disabled: boolean;
-  onChange: (patch: Partial<DraftLine>) => void;
-  onRemove?: () => void;
-}) {
-  const amount = netAmount(line);
-
-  return (
-    <div className="inset">
-      <div className="row row--between" style={{ marginBottom: '0.75rem' }}>
-        <h3 className="inset__title" style={{ margin: 0 }}>
-          Line {index + 1}
-        </h3>
-        <div className="row" style={{ gap: '0.6rem' }}>
-          <span className="small muted">
-            Net <strong className="numeric">{money(amount)}</strong>
-          </span>
-          {onRemove && (
-            <button
-              type="button"
-              className="btn btn--subtle btn--icon btn--sm"
-              onClick={onRemove}
-              disabled={disabled}
-              aria-label={`Remove line ${index + 1}`}
-            >
-              <IconClose size={14} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="form__grid">
-        <LookupField
-          label="Procurement category"
-          lookup={lookups?.['categories']}
-          value={line.category}
-          onChange={(value) => onChange({ category: value })}
-          disabled={disabled}
-        />
-
-        <LookupField
-          label="Employee"
-          required
-          lookup={lookups?.['employees']}
-          value={line.requisitioner}
-          onChange={(value) => onChange({ requisitioner: value })}
-          disabled={disabled}
-          hint="Requisitioner personnel number."
-        />
-
-        <div className="field" style={{ gridColumn: 'span 2', minWidth: 240 }}>
-          <label className="field__label">
-            Item description<span className="field__required"> *</span>
-          </label>
-          <input
-            className="field__input"
-            value={line.description}
-            onChange={(e) => onChange({ description: e.target.value })}
-            disabled={disabled}
-            placeholder="What is being requested"
-          />
-        </div>
-
-        <div className="field">
-          <label className="field__label">
-            Quantity<span className="field__required"> *</span>
-          </label>
-          <input
-            className="field__input numeric"
-            type="number"
-            min="0"
-            step="any"
-            value={line.quantity}
-            onChange={(e) => onChange({ quantity: e.target.value })}
-            disabled={disabled}
-          />
-        </div>
-
-        <LookupField
-          label="Unit of measure"
-          lookup={lookups?.['units']}
-          value={line.unit}
-          onChange={(value) => onChange({ unit: value })}
-          disabled={disabled}
-        />
-
-        <div className="field">
-          <label className="field__label">Unit price</label>
-          <input
-            className="field__input numeric"
-            type="number"
-            min="0"
-            step="any"
-            value={line.unitPrice}
-            onChange={(e) => onChange({ unitPrice: e.target.value })}
-            disabled={disabled}
-          />
-        </div>
-
-        <div className="field">
-          <label className="field__label">Net amount</label>
-          <input
-            className="field__input numeric"
-            value={money(amount)}
-            readOnly
-            disabled
-            tabIndex={-1}
-            aria-label="Net amount, calculated"
-          />
-          <p className="field__hint">Quantity × unit price.</p>
-        </div>
-
-        <LookupField
-          label="Vendor account"
-          lookup={lookups?.['vendors']}
-          value={line.vendor}
-          onChange={(value) => onChange({ vendor: value })}
-          disabled={disabled}
-        />
-
-        <div className="field">
-          <label className="field__label">Requested date</label>
-          <input
-            className="field__input"
-            type="date"
-            value={line.requestedDate}
-            onChange={(e) => onChange({ requestedDate: e.target.value })}
-            disabled={disabled}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /**
- * Dropdown backed by D365 reference data.
+ * In-cell dropdown, degrading to a text input when no options exist.
  *
- * Degrades to a free-text input when the lookup returned nothing, so a missing
- * or misnamed reference entity narrows the form rather than blocking it.
+ * Rendered as a native select so long lists stay keyboard-searchable: typing
+ * the first characters of a vendor account jumps to it, which matters when the
+ * vendor master runs to hundreds of rows.
  */
-function LookupField({
-  label,
+function CellLookup({
   lookup,
   value,
   onChange,
   disabled,
-  required,
-  hint,
+  label,
 }: {
-  label: string;
   lookup?: LookupResult;
   value: string;
   onChange: (value: string) => void;
   disabled: boolean;
-  required?: boolean;
-  hint?: string;
+  label: string;
 }) {
-  const hasOptions = (lookup?.options.length ?? 0) > 0;
+  const options = lookup?.options ?? [];
+
+  if (options.length === 0) {
+    return (
+      <input
+        className="cell-input"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder="Type a value"
+        aria-label={label}
+      />
+    );
+  }
 
   return (
-    <div className="field">
-      <label className="field__label">
-        {label}
-        {required && <span className="field__required"> *</span>}
-      </label>
-
-      {hasOptions ? (
-        <select
-          className="field__input"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={disabled}
-        >
-          <option value="">— Select —</option>
-          {lookup!.options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label === option.value ? option.label : `${option.label} (${option.value})`}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <input
-          className="field__input"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          disabled={disabled}
-          placeholder="Type a value"
-        />
-      )}
-
-      {hint && <p className="field__hint">{hint}</p>}
-      {!hasOptions && lookup && (
-        <p className="field__hint" style={{ color: 'var(--warning)' }}>
-          No list available — enter the value directly.
-        </p>
-      )}
-    </div>
+    <select
+      className="cell-input"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      aria-label={label}
+    >
+      <option value="">—</option>
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label === option.value ? option.label : `${option.value} · ${option.label}`}
+        </option>
+      ))}
+    </select>
   );
 }

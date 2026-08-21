@@ -49,6 +49,9 @@ const schema = z.object({
    */
   D365_PREPARER_PERSONNEL_NUMBER: z.string().min(1).default('000020'),
 
+  /** Purpose stamped on every requisition this application creates. */
+  D365_REQUISITION_PURPOSE: z.string().min(1).default('Consumption'),
+
   /**
    * Reference entities backing the dropdowns on the create form.
    *

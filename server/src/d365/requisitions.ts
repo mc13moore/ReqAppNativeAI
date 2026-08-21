@@ -170,14 +170,27 @@ export async function createHeader(
     payload[COMPANY_FIELD] = company;
   }
 
-  // The buying legal entity follows the chosen company rather than being keyed
-  // in separately; F&O stores the code uppercase.
-  payload['ProjectBuyingLegalEntityId'] = company.toUpperCase();
+  // ProjectBuyingLegalEntityId is deliberately NOT set. Despite the name it is
+  // the *project* buying legal entity, backed by CompanyInfoDefault, and D365
+  // rejects the write with "Field CompanyInfoDefault requires field ProjId to
+  // also be set" unless a project accompanies it. The requisition's own company
+  // comes from the calling account's default legal entity, not from this field.
 
   // Writes reach D365 through the service principal mapped to a single admin
   // user, so that account is the truthful preparer of every record this
   // application creates.
   payload['PreparerPersonnelNumber'] = config.D365_PREPARER_PERSONNEL_NUMBER;
+
+  // Purpose is fixed rather than asked for: every requisition this application
+  // raises is a consumption request.
+  payload['RequisitionPurpose'] = config.D365_REQUISITION_PURPOSE;
+
+  // The accounting date follows the requested date rather than being entered
+  // separately; they are the same business date for this workflow.
+  const requestedDate = payload['DefaultRequestedDate'];
+  if (requestedDate !== undefined) {
+    payload['DefaultAccountingDate'] = requestedDate;
+  }
 
   if (errors.length) throw new ValidationError(errors);
 
