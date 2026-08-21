@@ -38,24 +38,38 @@ const schema = z.object({
   D365_METADATA_TTL_SECONDS: z.coerce.number().int().nonnegative().default(3600),
 
   /**
-   * How the preparer on a new requisition is resolved from the signed-in user.
+   * Personnel number recorded as the preparer on every requisition this
+   * application creates.
    *
-   * D365 identifies a preparer by personnel number, not by email, so the
-   * signed-in user's address has to be translated. The entity and field names
-   * are configurable because the right source differs between environments --
-   * SystemUsers is the usual one, but Workers or a custom entity may be
-   * correct instead. Check with /api/me/preparer before relying on it.
+   * Deliberately fixed rather than derived from the signed-in user: writes go
+   * through the service principal registered in D365 against one admin user
+   * account, so that account is the truthful author of the record. Attributing
+   * a requisition to whoever happened to be looking at the screen would put a
+   * name in the audit trail that did not create it.
    */
-  D365_PREPARER_ENTITY: z.string().default('SystemUsers'),
-  D365_PREPARER_EMAIL_FIELD: z.string().default('Email'),
-  D365_PREPARER_NUMBER_FIELD: z.string().default('PersonnelNumber'),
+  D365_PREPARER_PERSONNEL_NUMBER: z.string().min(1).default('000020'),
 
   /**
-   * Personnel number used when the lookup finds nothing, or when it is turned
-   * off by clearing D365_PREPARER_ENTITY. Without either, creating a
-   * requisition fails rather than inventing a preparer.
+   * Reference entities backing the dropdowns on the create form.
+   *
+   * Configurable because public entity names vary between F&O versions. When
+   * one of these cannot be read, the form falls back to the distinct values
+   * already present on existing requisition lines, which are guaranteed valid
+   * in this environment even though the list is shorter.
    */
-  D365_DEFAULT_PREPARER: z.string().default(''),
+  D365_CATEGORY_ENTITY: z.string().default('ProcurementCategories'),
+  D365_CATEGORY_FIELD: z.string().default('Name'),
+
+  D365_EMPLOYEE_ENTITY: z.string().default('Employees'),
+  D365_EMPLOYEE_NUMBER_FIELD: z.string().default('PersonnelNumber'),
+  D365_EMPLOYEE_NAME_FIELD: z.string().default('Name'),
+
+  D365_VENDOR_ENTITY: z.string().default('VendorsV2'),
+  D365_VENDOR_NUMBER_FIELD: z.string().default('VendorAccountNumber'),
+  D365_VENDOR_NAME_FIELD: z.string().default('VendorOrganizationName'),
+
+  D365_UNIT_ENTITY: z.string().default('UnitOfMeasures'),
+  D365_UNIT_FIELD: z.string().default('UnitSymbol'),
 
   /** Per-request timeout against D365, in milliseconds. */
   D365_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),

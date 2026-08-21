@@ -1,114 +1,143 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { IconCheckCircle, IconChevronLeft } from '../components/Icons';
-import { Badge, ErrorBanner } from '../components/primitives';
+import { IconAlert, IconChevronLeft, IconDoc, IconPlus, IconClose } from '../components/Icons';
+import { Badge, EmptyState, ErrorBanner, Skeleton } from '../components/primitives';
 import { api } from '../lib/api';
 import { useApp } from '../lib/AppContext';
-import { money } from '../lib/format';
-import type { FieldDef, Record365 } from '../lib/types';
+import { money, todayIso } from '../lib/format';
+import { useAsync } from '../lib/hooks';
+import type { CreateWithLinesResult, LookupResult, Record365 } from '../lib/types';
 
-/**
- * Multi-step requisition creation.
- *
- * The steps are driven by the schema the server publishes, so correcting a
- * field name in the D365 entity definitions changes this form with no edit
- * here. Only the grouping of fields into steps is decided in this file.
- */
-
-interface StepDef {
-  title: string;
-  subtitle: string;
-  /** Field names from the header schema shown in this step. */
-  fields: string[];
+/** A line held locally until the whole requisition is submitted. */
+interface DraftLine {
+  id: number;
+  category: string;
+  requisitioner: string;
+  description: string;
+  quantity: string;
+  unit: string;
+  unitPrice: string;
+  vendor: string;
+  requestedDate: string;
 }
 
-const STEPS: StepDef[] = [
-  {
-    title: 'Basics',
-    subtitle: 'What and why',
-    fields: ['RequisitionName', 'RequisitionPurpose'],
-  },
-  {
-    title: 'Scheduling',
-    subtitle: 'Dates',
-    fields: ['DefaultRequestedDate', 'DefaultAccountingDate'],
-  },
-  {
-    title: 'Review',
-    subtitle: 'Confirm and submit',
-    fields: [],
-  },
-];
+const emptyLine = (id: number, preparer: string): DraftLine => ({
+  id,
+  category: '',
+  requisitioner: preparer,
+  description: '',
+  quantity: '1',
+  unit: '',
+  unitPrice: '',
+  vendor: '',
+  requestedDate: todayIso(),
+});
+
+/** Net amount for a draft line. Quantity x unit price, to two decimals. */
+function netAmount(line: DraftLine): number {
+  const quantity = Number(line.quantity);
+  const price = Number(line.unitPrice);
+  if (!Number.isFinite(quantity) || !Number.isFinite(price)) return 0;
+  return Math.round(quantity * price * 100) / 100;
+}
 
 export function CreateRequisitionPage() {
   const { config, schema } = useApp();
   const navigate = useNavigate();
 
-  const [step, setStep] = useState(0);
+  const lookups = useAsync(() => api.lookups(), []);
+
   const [company, setCompany] = useState(config.defaultCompany.toUpperCase());
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [header, setHeader] = useState<Record<string, string>>({});
+  const [lines, setLines] = useState<DraftLine[]>([
+    emptyLine(1, config.preparerPersonnelNumber),
+  ]);
+  const [nextId, setNextId] = useState(2);
+
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const [result, setResult] = useState<CreateWithLinesResult | null>(null);
 
-  const editable = useMemo(
+  const headerFields = useMemo(
     () => schema.header.fields.filter((f) => !f.readOnly),
     [schema.header.fields],
   );
 
-  const fieldByName = useMemo(() => {
-    const map = new Map<string, FieldDef>();
-    for (const field of editable) map.set(field.name, field);
-    return map;
-  }, [editable]);
+  const total = lines.reduce((sum, line) => sum + netAmount(line), 0);
 
-  // Any editable field not explicitly placed in a step still needs to appear,
-  // or a schema change could silently drop it from the form.
-  const placed = new Set(STEPS.flatMap((s) => s.fields));
-  const unplaced = editable.filter((f) => !placed.has(f.name));
+  const addLine = () => {
+    setLines((prev) => [...prev, emptyLine(nextId, config.preparerPersonnelNumber)]);
+    setNextId((n) => n + 1);
+  };
 
-  const setValue = (name: string, value: string) =>
-    setValues((prev) => ({ ...prev, [name]: value }));
+  const updateLine = (id: number, patch: Partial<DraftLine>) =>
+    setLines((prev) => prev.map((line) => (line.id === id ? { ...line, ...patch } : line)));
 
-  const missingRequired = editable.filter((f) => f.required && !values[f.name]?.trim());
-  const canSubmit = missingRequired.length === 0 && company.trim().length > 0;
+  const removeLine = (id: number) => setLines((prev) => prev.filter((line) => line.id !== id));
+
+  const missingHeader = headerFields.filter((f) => f.required && !header[f.name]?.trim());
+  const incompleteLines = lines.filter(
+    (line) => !line.description.trim() || !Number(line.quantity) || !line.requisitioner.trim(),
+  );
+  const canSubmit =
+    !saving && missingHeader.length === 0 && lines.length > 0 && incompleteLines.length === 0;
 
   const submit = async () => {
     setSaving(true);
     setError(null);
+    setResult(null);
+
     try {
-      const payload: Record365 = { dataAreaId: company.trim().toLowerCase() };
-      for (const [name, value] of Object.entries(values)) {
-        if (value !== '') payload[name] = value;
+      const headerPayload: Record365 = {};
+      for (const [name, value] of Object.entries(header)) {
+        if (value.trim()) headerPayload[name] = value;
       }
 
-      const created = await api.createRequisition(payload);
-      const number = String(created['RequisitionNumber'] ?? '');
-      const createdCompany = String(created['ProjectBuyingLegalEntityId'] ?? company);
+      const linePayload: Record365[] = lines.map((line) => {
+        const payload: Record365 = {
+          LineDescription: line.description,
+          RequestedPurchaseQuantity: Number(line.quantity),
+          RequisitionerPersonnelNumber: line.requisitioner,
+          RequestedDate: line.requestedDate,
+        };
+        // Blank optional values are omitted rather than sent empty: D365
+        // rejects empty strings on typed fields.
+        if (line.category) payload['ProcurementProductCategoryName'] = line.category;
+        if (line.unit) payload['PurchaseUnitSymbol'] = line.unit;
+        if (line.unitPrice) payload['PurchasePrice'] = Number(line.unitPrice);
+        if (line.vendor) payload['VendorAccountNumber'] = line.vendor;
+        return payload;
+      });
 
-      if (number) {
-        navigate(`/requisitions/${createdCompany.toLowerCase()}/${encodeURIComponent(number)}`);
-      } else {
-        navigate('/requisitions');
+      const created = await api.createRequisitionWithLines({
+        company,
+        header: headerPayload,
+        lines: linePayload,
+      });
+
+      setResult(created);
+
+      // Only leave the page when everything landed; a partial result needs to
+      // stay on screen so the failures can actually be read.
+      if (created.failures.length === 0) {
+        navigate(
+          `/requisitions/${created.company.toLowerCase()}/${encodeURIComponent(created.requisitionNumber)}`,
+        );
       }
     } catch (err) {
       setError(err);
-      // Send the user back to a step where the problem is fixable rather than
-      // stranding them on a review screen with an error they cannot act on.
-      setStep(0);
     } finally {
       setSaving(false);
     }
   };
 
-  const currentStep = STEPS[step]!;
-  const stepFields = [
-    ...currentStep.fields.map((name) => fieldByName.get(name)).filter((f): f is FieldDef => !!f),
-    ...(step === 0 ? unplaced : []),
-  ];
-
   return (
-    <div className="page" style={{ maxWidth: 940 }}>
-      <Link to="/requisitions" className="small row" style={{ gap: '0.25rem', marginBottom: '0.75rem' }}>
+    <div className="page" style={{ maxWidth: 1240 }}>
+      <Link
+        to="/requisitions"
+        className="small row"
+        style={{ gap: '0.25rem', marginBottom: '0.75rem' }}
+      >
         <IconChevronLeft size={14} />
         All requisitions
       </Link>
@@ -118,39 +147,60 @@ export function CreateRequisitionPage() {
           <div className="page__eyebrow">Create</div>
           <h1>New requisition</h1>
           <p className="page__sub">
-            Creates a record in <code>{config.headerEntitySet}</code>. Lines are added afterwards
-            from the requisition page.
+            Header and lines are written to Dynamics 365 together when you submit.
           </p>
+        </div>
+        <div className="row">
+          <Badge tone="info">Preparer {config.preparerPersonnelNumber}</Badge>
         </div>
       </div>
 
       {error ? <ErrorBanner error={error} /> : null}
 
-      <div className="card" style={{ marginTop: error ? '1rem' : 0 }}>
-        <div className="stepper">
-          {STEPS.map((s, index) => (
-            <button
-              key={s.title}
-              type="button"
-              className={`step${index === step ? ' step--active' : ''}${index < step ? ' step--done' : ''}`}
-              onClick={() => index < step && setStep(index)}
-              disabled={index > step}
+      {result && result.failures.length > 0 && (
+        <div className="banner banner--warning" style={{ marginBottom: '1rem' }}>
+          <IconAlert size={17} style={{ flexShrink: 0, marginTop: 1 }} />
+          <div style={{ flex: 1 }}>
+            <div className="banner__title">
+              Requisition {result.requisitionNumber} was created, but{' '}
+              {result.failures.length} of {result.linesRequested} lines failed
+            </div>
+            <p>
+              {result.linesCreated} line{result.linesCreated === 1 ? '' : 's'} saved. The header
+              exists in Dynamics 365 and was not rolled back.
+            </p>
+            <ul className="banner__list">
+              {result.failures.map((failure) => (
+                <li key={failure.index}>
+                  Line {failure.index + 1}: {failure.message}
+                </li>
+              ))}
+            </ul>
+            <Link
+              to={`/requisitions/${result.company.toLowerCase()}/${encodeURIComponent(result.requisitionNumber)}`}
+              className="small"
+              style={{ fontWeight: 650 }}
             >
-              <span className="step__num">
-                {index < step ? <IconCheckCircle size={13} /> : index + 1}
-              </span>
-              <span>
-                <span className="step__label" style={{ display: 'block' }}>
-                  {s.title}
-                </span>
-                <span className="step__sub">{s.subtitle}</span>
-              </span>
-            </button>
-          ))}
+              Open {result.requisitionNumber} →
+            </Link>
+          </div>
+        </div>
+      )}
+
+      {/* --- Header ------------------------------------------------------- */}
+      <div className="card" style={{ marginBottom: '1rem' }}>
+        <div className="card__head">
+          <h2 className="card__title">
+            <IconDoc size={15} />
+            Requisition header
+          </h2>
+          <span className="card__hint">
+            Number assigned by Dynamics 365 · preparer {config.preparerPersonnelNumber}
+          </span>
         </div>
 
-        {step === 0 && (
-          <div className="field" style={{ maxWidth: 260, marginBottom: '1rem' }}>
+        <div className="form__grid">
+          <div className="field">
             <label className="field__label" htmlFor="company">
               Legal entity
             </label>
@@ -161,62 +211,110 @@ export function CreateRequisitionPage() {
               onChange={(e) => setCompany(e.target.value.toUpperCase())}
               disabled={saving}
             />
-            <p className="field__hint">Sets the buying legal entity on the requisition.</p>
+            <p className="field__hint">Sets the buying legal entity.</p>
+          </div>
+
+          {headerFields.map((field) => {
+            const id = `header-${field.name}`;
+            return (
+              <div className="field" key={field.name}>
+                <label className="field__label" htmlFor={id}>
+                  {field.label}
+                  {field.required && <span className="field__required"> *</span>}
+                </label>
+                {field.type === 'enum' && field.options ? (
+                  <select
+                    id={id}
+                    className="field__input"
+                    value={header[field.name] ?? ''}
+                    onChange={(e) => setHeader((h) => ({ ...h, [field.name]: e.target.value }))}
+                    disabled={saving}
+                  >
+                    <option value="">— Select —</option>
+                    {field.options.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    id={id}
+                    className="field__input"
+                    type={field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : 'text'}
+                    value={header[field.name] ?? ''}
+                    onChange={(e) => setHeader((h) => ({ ...h, [field.name]: e.target.value }))}
+                    disabled={saving}
+                  />
+                )}
+                {field.hint && <p className="field__hint">{field.hint}</p>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* --- Lines -------------------------------------------------------- */}
+      <div className="card">
+        <div className="card__head">
+          <h2 className="card__title">Lines ({lines.length})</h2>
+          <div className="row">
+            {lookups.data && <LookupNotice lookups={lookups.data} />}
+            <button type="button" className="btn btn--ghost btn--sm" onClick={addLine} disabled={saving}>
+              <IconPlus size={14} />
+              Add line
+            </button>
+          </div>
+        </div>
+
+        {lookups.loading && <Skeleton variant="row" count={2} />}
+
+        {lines.length === 0 ? (
+          <EmptyState
+            title="No lines yet"
+            hint="A requisition needs at least one line."
+            action={
+              <button type="button" className="btn btn--primary btn--sm" onClick={addLine}>
+                <IconPlus size={14} />
+                Add the first line
+              </button>
+            }
+          />
+        ) : (
+          <div className="stack">
+            {lines.map((line, index) => (
+              <LineEditor
+                key={line.id}
+                index={index}
+                line={line}
+                lookups={lookups.data}
+                disabled={saving}
+                onChange={(patch) => updateLine(line.id, patch)}
+                onRemove={lines.length > 1 ? () => removeLine(line.id) : undefined}
+              />
+            ))}
           </div>
         )}
 
-        {step < 2 ? (
-          <>
-            <div className="form__grid">
-              {stepFields.map((field) => (
-                <Field
-                  key={field.name}
-                  field={field}
-                  value={values[field.name] ?? ''}
-                  onChange={(v) => setValue(field.name, v)}
-                  disabled={saving}
-                />
-              ))}
-            </div>
-
-            {step === 0 && (
-              <p className="field__hint" style={{ marginTop: '0.9rem' }}>
-                The requisition number is assigned by Dynamics 365, and the preparer is set from
-                your signed-in account.
-              </p>
-            )}
-          </>
-        ) : (
-          <ReviewStep company={company} values={values} fields={editable} />
-        )}
+        <div style={{ marginTop: '1.15rem', marginLeft: 'auto', maxWidth: 320 }}>
+          <div className="total-row total-row--grand">
+            <span>Requisition total</span>
+            <span className="numeric">{money(total)}</span>
+          </div>
+          <p className="tiny dim" style={{ marginTop: '0.3rem' }}>
+            Calculated locally from quantity × unit price. Dynamics 365 recalculates on save.
+          </p>
+        </div>
 
         <div className="form__actions">
-          {step > 0 && (
-            <button
-              type="button"
-              className="btn btn--ghost"
-              onClick={() => setStep((s) => s - 1)}
-              disabled={saving}
-            >
-              Back
-            </button>
-          )}
-
-          {step < STEPS.length - 1 ? (
-            <button type="button" className="btn btn--primary" onClick={() => setStep((s) => s + 1)}>
-              Continue
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="btn btn--primary"
-              onClick={() => void submit()}
-              disabled={saving || !canSubmit}
-            >
-              {saving ? 'Creating…' : 'Create requisition'}
-            </button>
-          )}
-
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => void submit()}
+            disabled={!canSubmit}
+          >
+            {saving ? 'Creating…' : `Create requisition with ${lines.length} line${lines.length === 1 ? '' : 's'}`}
+          </button>
           <button
             type="button"
             className="btn btn--subtle"
@@ -227,9 +325,11 @@ export function CreateRequisitionPage() {
           </button>
         </div>
 
-        {step === STEPS.length - 1 && missingRequired.length > 0 && (
+        {(missingHeader.length > 0 || incompleteLines.length > 0) && (
           <p className="field__hint" style={{ marginTop: '0.6rem', color: 'var(--danger)' }}>
-            Still required: {missingRequired.map((f) => f.label).join(', ')}
+            {missingHeader.length > 0 && `Header needs: ${missingHeader.map((f) => f.label).join(', ')}. `}
+            {incompleteLines.length > 0 &&
+              `${incompleteLines.length} line${incompleteLines.length === 1 ? '' : 's'} still need a description, quantity and employee.`}
           </p>
         )}
       </div>
@@ -237,123 +337,225 @@ export function CreateRequisitionPage() {
   );
 }
 
-function Field({
-  field,
+/** Warns when a dropdown fell back to values observed on existing lines. */
+function LookupNotice({ lookups }: { lookups: Record<string, LookupResult> }) {
+  const degraded = Object.values(lookups).filter((l) => l.source !== 'entity');
+  if (degraded.length === 0) return null;
+
+  return (
+    <Badge tone="warning" dot>
+      {degraded.length} list{degraded.length === 1 ? '' : 's'} from existing lines
+    </Badge>
+  );
+}
+
+function LineEditor({
+  index,
+  line,
+  lookups,
+  disabled,
+  onChange,
+  onRemove,
+}: {
+  index: number;
+  line: DraftLine;
+  lookups: Record<string, LookupResult> | null;
+  disabled: boolean;
+  onChange: (patch: Partial<DraftLine>) => void;
+  onRemove?: () => void;
+}) {
+  const amount = netAmount(line);
+
+  return (
+    <div className="inset">
+      <div className="row row--between" style={{ marginBottom: '0.75rem' }}>
+        <h3 className="inset__title" style={{ margin: 0 }}>
+          Line {index + 1}
+        </h3>
+        <div className="row" style={{ gap: '0.6rem' }}>
+          <span className="small muted">
+            Net <strong className="numeric">{money(amount)}</strong>
+          </span>
+          {onRemove && (
+            <button
+              type="button"
+              className="btn btn--subtle btn--icon btn--sm"
+              onClick={onRemove}
+              disabled={disabled}
+              aria-label={`Remove line ${index + 1}`}
+            >
+              <IconClose size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="form__grid">
+        <LookupField
+          label="Procurement category"
+          lookup={lookups?.['categories']}
+          value={line.category}
+          onChange={(value) => onChange({ category: value })}
+          disabled={disabled}
+        />
+
+        <LookupField
+          label="Employee"
+          required
+          lookup={lookups?.['employees']}
+          value={line.requisitioner}
+          onChange={(value) => onChange({ requisitioner: value })}
+          disabled={disabled}
+          hint="Requisitioner personnel number."
+        />
+
+        <div className="field" style={{ gridColumn: 'span 2', minWidth: 240 }}>
+          <label className="field__label">
+            Item description<span className="field__required"> *</span>
+          </label>
+          <input
+            className="field__input"
+            value={line.description}
+            onChange={(e) => onChange({ description: e.target.value })}
+            disabled={disabled}
+            placeholder="What is being requested"
+          />
+        </div>
+
+        <div className="field">
+          <label className="field__label">
+            Quantity<span className="field__required"> *</span>
+          </label>
+          <input
+            className="field__input numeric"
+            type="number"
+            min="0"
+            step="any"
+            value={line.quantity}
+            onChange={(e) => onChange({ quantity: e.target.value })}
+            disabled={disabled}
+          />
+        </div>
+
+        <LookupField
+          label="Unit of measure"
+          lookup={lookups?.['units']}
+          value={line.unit}
+          onChange={(value) => onChange({ unit: value })}
+          disabled={disabled}
+        />
+
+        <div className="field">
+          <label className="field__label">Unit price</label>
+          <input
+            className="field__input numeric"
+            type="number"
+            min="0"
+            step="any"
+            value={line.unitPrice}
+            onChange={(e) => onChange({ unitPrice: e.target.value })}
+            disabled={disabled}
+          />
+        </div>
+
+        <div className="field">
+          <label className="field__label">Net amount</label>
+          <input
+            className="field__input numeric"
+            value={money(amount)}
+            readOnly
+            disabled
+            tabIndex={-1}
+            aria-label="Net amount, calculated"
+          />
+          <p className="field__hint">Quantity × unit price.</p>
+        </div>
+
+        <LookupField
+          label="Vendor account"
+          lookup={lookups?.['vendors']}
+          value={line.vendor}
+          onChange={(value) => onChange({ vendor: value })}
+          disabled={disabled}
+        />
+
+        <div className="field">
+          <label className="field__label">Requested date</label>
+          <input
+            className="field__input"
+            type="date"
+            value={line.requestedDate}
+            onChange={(e) => onChange({ requestedDate: e.target.value })}
+            disabled={disabled}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Dropdown backed by D365 reference data.
+ *
+ * Degrades to a free-text input when the lookup returned nothing, so a missing
+ * or misnamed reference entity narrows the form rather than blocking it.
+ */
+function LookupField({
+  label,
+  lookup,
   value,
   onChange,
   disabled,
+  required,
+  hint,
 }: {
-  field: FieldDef;
+  label: string;
+  lookup?: LookupResult;
   value: string;
   onChange: (value: string) => void;
   disabled: boolean;
+  required?: boolean;
+  hint?: string;
 }) {
-  const id = `field-${field.name}`;
-  const hintId = field.hint ? `${id}-hint` : undefined;
-
-  const inputType =
-    field.type === 'number' || field.type === 'integer'
-      ? 'number'
-      : field.type === 'date'
-        ? 'date'
-        : field.type === 'datetime'
-          ? 'datetime-local'
-          : 'text';
+  const hasOptions = (lookup?.options.length ?? 0) > 0;
 
   return (
     <div className="field">
-      <label className="field__label" htmlFor={id}>
-        {field.label}
-        {field.required && <span className="field__required" aria-hidden="true"> *</span>}
+      <label className="field__label">
+        {label}
+        {required && <span className="field__required"> *</span>}
       </label>
 
-      {field.type === 'enum' && field.options ? (
+      {hasOptions ? (
         <select
-          id={id}
           className="field__input"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
-          aria-describedby={hintId}
         >
           <option value="">— Select —</option>
-          {field.options.map((option) => (
-            <option key={option} value={option}>
-              {option}
+          {lookup!.options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label === option.value ? option.label : `${option.label} (${option.value})`}
             </option>
           ))}
         </select>
       ) : (
         <input
-          id={id}
           className="field__input"
-          type={inputType}
-          step={field.type === 'number' ? 'any' : undefined}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
-          aria-describedby={hintId}
+          placeholder="Type a value"
         />
       )}
 
-      {field.hint && (
-        <p className="field__hint" id={hintId}>
-          {field.hint}
+      {hint && <p className="field__hint">{hint}</p>}
+      {!hasOptions && lookup && (
+        <p className="field__hint" style={{ color: 'var(--warning)' }}>
+          No list available — enter the value directly.
         </p>
       )}
-    </div>
-  );
-}
-
-function ReviewStep({
-  company,
-  values,
-  fields,
-}: {
-  company: string;
-  values: Record<string, string>;
-  fields: FieldDef[];
-}) {
-  const filled = fields.filter((f) => values[f.name]?.trim());
-
-  return (
-    <div>
-      <div className="callout" style={{ marginBottom: '1rem' }}>
-        <IconCheckCircle size={16} style={{ flexShrink: 0, marginTop: 2, color: 'var(--accent)' }} />
-        <div>
-          <strong>Ready to create</strong>
-          <div className="tiny dim" style={{ marginTop: '0.15rem' }}>
-            This writes a purchase requisition header to Dynamics 365. Lines are added next.
-          </div>
-        </div>
-      </div>
-
-      <dl className="detail-grid">
-        <div>
-          <dt>Legal entity</dt>
-          <dd>
-            <Badge tone="info">{company}</Badge>
-          </dd>
-        </div>
-        {filled.map((field) => (
-          <div key={field.name}>
-            <dt>{field.label}</dt>
-            <dd>
-              {field.type === 'number' && !Number.isNaN(Number(values[field.name]))
-                ? money(Number(values[field.name]))
-                : values[field.name]}
-            </dd>
-          </div>
-        ))}
-        <div>
-          <dt>Requisition number</dt>
-          <dd className="dim">Assigned by Dynamics 365</dd>
-        </div>
-        <div>
-          <dt>Preparer</dt>
-          <dd className="dim">Your signed-in account</dd>
-        </div>
-      </dl>
     </div>
   );
 }

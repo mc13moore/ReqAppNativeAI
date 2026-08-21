@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireUser } from '../auth/user.js';
 import { headerEntity, lineEntity } from '../d365/entities.js';
+import { ValidationError } from '../d365/requisitions.js';
 import {
   createHeader,
   createLine,
@@ -10,6 +11,7 @@ import {
   listLines,
   normaliseCompany,
 } from '../d365/requisitions.js';
+import { loadAllLookups, loadLookup } from '../d365/lookups.js';
 
 const listQuerySchema = z.object({
   company: z.string().optional(),
@@ -25,6 +27,12 @@ const paramsSchema = z.object({
 });
 
 const bodySchema = z.record(z.unknown());
+
+const withLinesSchema = z.object({
+  company: z.string().optional(),
+  header: z.record(z.unknown()),
+  lines: z.array(z.record(z.unknown())).max(100).default([]),
+});
 
 export default async function requisitionRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireUser);
@@ -69,10 +77,7 @@ export default async function requisitionRoutes(app: FastifyInstance) {
       typeof body['dataAreaId'] === 'string' ? body['dataAreaId'] : undefined,
     );
 
-    const created = await createHeader(
-      { company, userEmail: request.user?.name },
-      body,
-    );
+    const created = await createHeader({ company }, body);
 
     request.log.info(
       { user: request.user?.name, company, requisition: created['RequisitionNumber'] },
@@ -99,5 +104,77 @@ export default async function requisitionRoutes(app: FastifyInstance) {
     );
 
     return reply.code(201).send(created);
+  });
+
+  /** Reference data backing the create form's dropdowns. */
+  app.get('/lookups', async (request) => {
+    const refresh = (request.query as Record<string, unknown>)?.['refresh'] === 'true';
+    return loadAllLookups(refresh);
+  });
+
+  app.get('/lookups/:kind', async (request) => {
+    const { kind } = request.params as { kind: string };
+    return loadLookup(kind);
+  });
+
+  /**
+   * Creates a requisition and its lines in one call.
+   *
+   * D365 has no batch endpoint here, so this is still a header POST followed by
+   * one POST per line. Doing it server-side keeps the sequence off the network
+   * round-trip-per-line path and, more importantly, lets a partial failure be
+   * reported precisely: the header exists, these lines landed, this one did
+   * not. Rolling the header back would be worse -- the requisition number is
+   * already assigned and the record is visible in D365.
+   */
+  app.post('/requisitions/with-lines', async (request, reply) => {
+    const body = withLinesSchema.parse(request.body);
+    const company = normaliseCompany(body.company);
+
+    const header = await createHeader({ company }, body.header);
+    const requisitionNumber = String(header['RequisitionNumber'] ?? '').trim();
+
+    if (!requisitionNumber) {
+      return reply.code(502).send({
+        error: 'missing_requisition_number',
+        message:
+          'Dynamics 365 created the requisition but did not return its number, so lines could not be attached.',
+      });
+    }
+
+    const created: Record<string, unknown>[] = [];
+    const failures: { index: number; message: string; errors?: string[] }[] = [];
+
+    for (const [index, line] of body.lines.entries()) {
+      try {
+        created.push(await createLine(company, requisitionNumber, line));
+      } catch (err) {
+        failures.push({
+          index,
+          message: err instanceof Error ? err.message : String(err),
+          errors: err instanceof ValidationError ? err.errors : undefined,
+        });
+      }
+    }
+
+    request.log.info(
+      {
+        user: request.user?.name,
+        company,
+        requisition: requisitionNumber,
+        lines: created.length,
+        failed: failures.length,
+      },
+      'created requisition with lines',
+    );
+
+    return reply.code(failures.length > 0 ? 207 : 201).send({
+      header,
+      requisitionNumber,
+      company,
+      linesCreated: created.length,
+      linesRequested: body.lines.length,
+      failures,
+    });
   });
 }

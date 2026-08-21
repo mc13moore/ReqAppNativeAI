@@ -42,7 +42,32 @@ export interface AppConfig {
   headerEntitySet: string;
   lineEntitySet: string;
   authEnabled: boolean;
+  /** Personnel number recorded as preparer on everything this app creates. */
+  preparerPersonnelNumber: string;
   signedIn: boolean;
+}
+
+export interface LookupOption {
+  value: string;
+  label: string;
+}
+
+export interface LookupResult {
+  kind: string;
+  options: LookupOption[];
+  /** Where the options came from; 'observed' means values seen on real lines. */
+  source: 'entity' | 'observed' | 'none';
+  entity?: string;
+  error?: string;
+}
+
+export interface CreateWithLinesResult {
+  header: Record365;
+  requisitionNumber: string;
+  company: string;
+  linesCreated: number;
+  linesRequested: number;
+  failures: { index: number; message: string; errors?: string[] }[];
 }
 
 export interface AppUser {

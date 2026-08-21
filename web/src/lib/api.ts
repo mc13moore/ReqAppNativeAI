@@ -4,7 +4,9 @@ import type {
   AppUser,
   AssistantIntent,
   AssistantReply,
+  CreateWithLinesResult,
   D365Health,
+  LookupResult,
   PropertyInfo,
   Record365,
   RequisitionDetailView,
@@ -86,10 +88,7 @@ export const api = {
   me: () => call<{ user: AppUser }>('/me'),
   schema: () => call<Schema>('/schema'),
   checkD365: () => call<D365Health>('/health/d365'),
-  preparer: () =>
-    call<{ signedInAs?: string; personnelNumber: string | null; source: string; error?: string }>(
-      '/me/preparer',
-    ),
+  lookups: () => call<Record<string, LookupResult>>('/lookups'),
 
   /* --- workspace (read projections) --- */
   requisitions: (params: {
@@ -120,6 +119,16 @@ export const api = {
   /* --- writes (direct D365 pass-through) --- */
   createRequisition: (body: Record365) =>
     call<Record365>('/requisitions', { method: 'POST', body: JSON.stringify(body) }),
+
+  createRequisitionWithLines: (body: {
+    company?: string;
+    header: Record365;
+    lines: Record365[];
+  }) =>
+    call<CreateWithLinesResult>('/requisitions/with-lines', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 
   createLine: (company: string, requisitionNumber: string, body: Record365) =>
     call<Record365>(

@@ -17,7 +17,6 @@ import {
   lineEntity,
   listFields,
 } from './entities.js';
-import { resolvePreparer } from './preparer.js';
 
 export type Record365 = Record<string, unknown>;
 
@@ -157,8 +156,6 @@ export class ValidationError extends Error {
 export interface CreateHeaderContext {
   /** Legal entity chosen on the create screen. */
   company: string;
-  /** Email of the signed-in user, used to resolve the preparer. */
-  userEmail?: string;
 }
 
 export async function createHeader(
@@ -177,20 +174,10 @@ export async function createHeader(
   // in separately; F&O stores the code uppercase.
   payload['ProjectBuyingLegalEntityId'] = company.toUpperCase();
 
-  // D365 identifies the preparer by personnel number, so the signed-in user's
-  // address is translated before the record is written. Creating a requisition
-  // attributed to the wrong person is worse than refusing to create one, so an
-  // unresolved preparer is a validation failure rather than a silent default.
-  const preparer = await resolvePreparer(context.userEmail);
-  if (!preparer.personnelNumber) {
-    errors.push(
-      preparer.error
-        ? `Could not determine the preparer for ${context.userEmail ?? 'the signed-in user'}: ${preparer.error}`
-        : `No D365 personnel number is mapped to ${context.userEmail ?? 'the signed-in user'}. Set D365_DEFAULT_PREPARER, or check the preparer lookup at /api/me/preparer.`,
-    );
-  } else {
-    payload['PreparerPersonnelNumber'] = preparer.personnelNumber;
-  }
+  // Writes reach D365 through the service principal mapped to a single admin
+  // user, so that account is the truthful preparer of every record this
+  // application creates.
+  payload['PreparerPersonnelNumber'] = config.D365_PREPARER_PERSONNEL_NUMBER;
 
   if (errors.length) throw new ValidationError(errors);
 

@@ -21,7 +21,7 @@ export function DiagnosticsPage() {
   const [selected, setSelected] = useState<string | null>(config.headerEntitySet);
 
   const connection = useAsync(() => api.checkD365(), []);
-  const preparer = useAsync(() => api.preparer(), []);
+  const lookups = useAsync(() => api.lookups(), []);
   const entities = useAsync(() => api.searchEntities(search), [search]);
   const described = useAsync(
     () => (selected ? api.describeEntity(selected) : Promise.resolve(null)),
@@ -85,41 +85,57 @@ export function DiagnosticsPage() {
 
         <div className="card">
           <div className="card__head">
-            <h2 className="card__title">Preparer mapping</h2>
-            <button type="button" className="btn btn--ghost btn--sm" onClick={preparer.reload}>
+            <h2 className="card__title">Create-form lookups</h2>
+            <button type="button" className="btn btn--ghost btn--sm" onClick={lookups.reload}>
               Re-check
             </button>
           </div>
 
-          {preparer.loading && <Spinner label="Resolving…" />}
-          {preparer.error ? <ErrorBanner error={preparer.error} /> : null}
-          {preparer.data && (
+          {lookups.loading && <Spinner label="Reading reference entities…" />}
+          {lookups.error ? <ErrorBanner error={lookups.error} /> : null}
+          {lookups.data && (
             <>
-              <p className="small">
-                Signed in as <strong>{preparer.data.signedInAs ?? 'unknown'}</strong>
-              </p>
-              <div className="row" style={{ marginTop: '0.6rem' }}>
-                {preparer.data.personnelNumber ? (
-                  <Badge tone="success">
-                    Personnel #{preparer.data.personnelNumber} · via {preparer.data.source}
-                  </Badge>
-                ) : (
-                  <Badge tone="danger">
-                    <IconAlert size={11} />
-                    No personnel number resolved
-                  </Badge>
-                )}
+              <div className="stack stack--sm">
+                {Object.values(lookups.data).map((lookup) => (
+                  <div className="row row--between" key={lookup.kind}>
+                    <span className="small" style={{ fontWeight: 550, textTransform: 'capitalize' }}>
+                      {lookup.kind}
+                    </span>
+                    <div className="row" style={{ gap: '0.4rem' }}>
+                      <span className="tiny dim">{lookup.options.length} options</span>
+                      <Badge
+                        tone={
+                          lookup.source === 'entity'
+                            ? 'success'
+                            : lookup.source === 'observed'
+                              ? 'warning'
+                              : 'danger'
+                        }
+                      >
+                        {lookup.source === 'entity'
+                          ? lookup.entity
+                          : lookup.source === 'observed'
+                            ? 'from existing lines'
+                            : 'unavailable'}
+                      </Badge>
+                    </div>
+                  </div>
+                ))}
               </div>
-              {preparer.data.error && (
-                <p className="tiny dim" style={{ marginTop: '0.5rem' }}>
-                  {preparer.data.error}
-                </p>
-              )}
-              <p className="field__hint" style={{ marginTop: '0.6rem' }}>
-                Creating a requisition needs this mapping. Adjust with{' '}
-                <code>D365_PREPARER_ENTITY</code>, <code>D365_PREPARER_EMAIL_FIELD</code> and{' '}
-                <code>D365_PREPARER_NUMBER_FIELD</code>.
+
+              <p className="field__hint" style={{ marginTop: '0.7rem' }}>
+                A list showing <strong>from existing lines</strong> means its reference entity could
+                not be read, so the options are the distinct values already present on requisition
+                lines. Correct the entity with the matching <code>D365_*_ENTITY</code> variable.
               </p>
+
+              {Object.values(lookups.data)
+                .filter((l) => l.error)
+                .map((l) => (
+                  <p className="tiny dim" key={l.kind} style={{ marginTop: '0.4rem' }}>
+                    <strong>{l.kind}:</strong> {l.error}
+                  </p>
+                ))}
             </>
           )}
         </div>
